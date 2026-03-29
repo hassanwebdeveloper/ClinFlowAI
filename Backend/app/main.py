@@ -1,15 +1,28 @@
+from contextlib import asynccontextmanager
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-import os
-from app.core.config import settings
+from fastapi.staticfiles import StaticFiles
+
 from app.api.v1.router import api_router
+from app.core.config import settings
+from app.core.database import close_mongodb_connection, connect_to_mongodb
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    await connect_to_mongodb()
+    yield
+    await close_mongodb_connection()
+
 
 app = FastAPI(
     title="ClinFlow AI",
     description="Backend API for ClinFlow AI application",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 # CORS middleware configuration

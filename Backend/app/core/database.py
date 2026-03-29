@@ -9,6 +9,8 @@ async def connect_to_mongodb():
     global mongodb_client
     try:
         mongodb_client = AsyncIOMotorClient(settings.MONGODB_URL)
+        db = mongodb_client[settings.MONGODB_DB_NAME]
+        await db["doctors"].create_index("email", unique=True)
         print("Connected to MongoDB.")
     except Exception as e:
         print(f"Could not connect to MongoDB: {e}")

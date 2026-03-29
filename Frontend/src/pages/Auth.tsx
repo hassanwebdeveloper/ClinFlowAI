@@ -6,8 +6,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
 
 interface AuthProps {
-  onSignIn: (email: string, password: string) => void;
-  onSignUp: (email: string, password: string, name: string) => void;
+  onSignIn: (email: string, password: string) => Promise<void>;
+  onSignUp: (email: string, password: string, name: string) => Promise<void>;
 }
 
 export default function Auth({ onSignIn, onSignUp }: AuthProps) {
@@ -15,9 +15,10 @@ export default function Auth({ onSignIn, onSignUp }: AuthProps) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
+  const [submitting, setSubmitting] = useState(false);
   const { toast } = useToast();
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email || !password) {
       toast({ title: "Please fill in all fields", variant: "destructive" });
@@ -27,12 +28,20 @@ export default function Auth({ onSignIn, onSignUp }: AuthProps) {
       toast({ title: "Please enter your name", variant: "destructive" });
       return;
     }
-    if (isSignUp) {
-      onSignUp(email, password, name);
-      toast({ title: "Account created successfully ✓" });
-    } else {
-      onSignIn(email, password);
-      toast({ title: "Welcome back ✓" });
+    setSubmitting(true);
+    try {
+      if (isSignUp) {
+        await onSignUp(email, password, name);
+        toast({ title: "Account created successfully ✓" });
+      } else {
+        await onSignIn(email, password);
+        toast({ title: "Welcome back ✓" });
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Something went wrong";
+      toast({ title: message, variant: "destructive" });
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -88,7 +97,11 @@ export default function Auth({ onSignIn, onSignUp }: AuthProps) {
                   className="pl-10 h-11 rounded-xl"
                 />
               </div>
-              <Button type="submit" className="w-full h-11 rounded-xl text-sm font-medium">
+              <Button
+                type="submit"
+                disabled={submitting}
+                className="w-full h-11 rounded-xl text-sm font-medium"
+              >
                 {isSignUp ? "Create Account" : "Sign In"}
                 <ArrowRight className="h-4 w-4 ml-1" />
               </Button>
