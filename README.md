@@ -1,2 +1,1 @@
-# ClinFlowAI
-ClinFlowAI
+# AdScribe.AI
