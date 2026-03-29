@@ -7,7 +7,7 @@ import { toast } from "sonner";
 
 interface NewVisitFlowProps {
   patientName: string;
-  onSave: (visit: Visit) => void;
+  onSave: (visit: Visit) => void | Promise<void>;
   onCancel: () => void;
 }
 
@@ -115,16 +115,23 @@ export function NewVisitFlow({ patientName, onSave, onCancel }: NewVisitFlowProp
     if (!soap) return;
     setIsSaving(true);
     setTimeout(() => {
-      const visit: Visit = {
-        id: `v-${Date.now()}`,
-        date: new Date().toISOString().split("T")[0],
-        diagnosis: "Tension Headache",
-        soap,
-        prescriptions: [{ medicine: "Sumatriptan", dosage: "50mg", frequency: "As needed" }],
-      };
-      onSave(visit);
-      toast.success("Visit saved successfully ✓");
-      setIsSaving(false);
+      void (async () => {
+        const visit: Visit = {
+          id: `v-${Date.now()}`,
+          date: new Date().toISOString().split("T")[0],
+          diagnosis: "Tension Headache",
+          soap,
+          prescriptions: [{ medicine: "Sumatriptan", dosage: "50mg", frequency: "As needed" }],
+        };
+        try {
+          await onSave(visit);
+          toast.success("Visit saved successfully ✓");
+        } catch (e) {
+          toast.error(e instanceof Error ? e.message : "Could not save visit");
+        } finally {
+          setIsSaving(false);
+        }
+      })();
     }, 1000);
   };
 

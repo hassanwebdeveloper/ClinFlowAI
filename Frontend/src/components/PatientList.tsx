@@ -7,7 +7,7 @@ interface PatientListProps {
   patients: Patient[];
   selectedPatientId: string;
   onSelectPatient: (id: string) => void;
-  onAddPatient: (data: { name: string; age: number; gender: string }) => void;
+  onAddPatient: (data: { uiId: string; name: string; age: number; gender: string }) => Promise<void>;
 }
 
 export function PatientList({ patients, selectedPatientId, onSelectPatient, onAddPatient }: PatientListProps) {
@@ -36,7 +36,7 @@ export function PatientList({ patients, selectedPatientId, onSelectPatient, onAd
               <div>
                 <p className="text-sm font-semibold text-foreground">{patient.name}</p>
                 <p className="text-xs text-muted-foreground">
-                  {patient.age}y · {patient.gender}
+                  ID {patient.uiId} · {patient.age}y · {patient.gender}
                 </p>
               </div>
             </div>

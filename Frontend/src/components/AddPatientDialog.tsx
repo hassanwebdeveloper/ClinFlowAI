@@ -19,28 +19,41 @@ import {
 import { useToast } from "@/hooks/use-toast";
 
 interface AddPatientDialogProps {
-  onAdd: (patient: { name: string; age: number; gender: string }) => void;
+  onAdd: (patient: { uiId: string; name: string; age: number; gender: string }) => Promise<void>;
 }
 
 export function AddPatientDialog({ onAdd }: AddPatientDialogProps) {
   const [open, setOpen] = useState(false);
+  const [uiId, setUiId] = useState("");
   const [name, setName] = useState("");
   const [age, setAge] = useState("");
   const [gender, setGender] = useState("");
+  const [saving, setSaving] = useState(false);
   const { toast } = useToast();
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !age || !gender) {
+    if (!uiId.trim() || !name.trim() || !age || !gender) {
       toast({ title: "Please fill in all fields", variant: "destructive" });
       return;
     }
-    onAdd({ name: name.trim(), age: parseInt(age), gender });
-    toast({ title: "Patient added successfully ✓" });
-    setName("");
-    setAge("");
-    setGender("");
-    setOpen(false);
+    setSaving(true);
+    try {
+      await onAdd({ uiId: uiId.trim(), name: name.trim(), age: parseInt(age, 10), gender });
+      toast({ title: "Patient added successfully ✓" });
+      setUiId("");
+      setName("");
+      setAge("");
+      setGender("");
+      setOpen(false);
+    } catch (err) {
+      toast({
+        title: err instanceof Error ? err.message : "Could not add patient",
+        variant: "destructive",
+      });
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -55,6 +68,16 @@ export function AddPatientDialog({ onAdd }: AddPatientDialogProps) {
           <DialogTitle>Add New Patient</DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4 mt-2">
+          <div>
+            <p className="text-xs text-muted-foreground mb-1.5">Patient reference ID (cannot be changed later)</p>
+            <Input
+              placeholder="e.g. P-2041"
+              value={uiId}
+              onChange={(e) => setUiId(e.target.value)}
+              className="h-11 rounded-xl"
+              autoComplete="off"
+            />
+          </div>
           <Input
             placeholder="Patient name"
             value={name}
@@ -80,7 +103,7 @@ export function AddPatientDialog({ onAdd }: AddPatientDialogProps) {
               <SelectItem value="Other">Other</SelectItem>
             </SelectContent>
           </Select>
-          <Button type="submit" className="w-full h-11 rounded-xl">
+          <Button type="submit" disabled={saving} className="w-full h-11 rounded-xl">
             Add Patient
           </Button>
         </form>

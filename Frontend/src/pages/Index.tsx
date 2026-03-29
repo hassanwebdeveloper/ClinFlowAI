@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AppSidebar } from "@/components/AppSidebar";
 import { PatientList } from "@/components/PatientList";
 import { PatientView } from "@/components/PatientView";
@@ -13,7 +13,11 @@ const Index = () => {
   const { user, signIn, signUp, signOut, isAuthenticated } = useAuth();
   const store = usePatientStore();
   const [activeTab, setActiveTab] = useState("patients");
-  const [showPatientDetail, setShowPatientDetail] = useState(true);
+  const [showPatientDetail, setShowPatientDetail] = useState(false);
+
+  useEffect(() => {
+    if (store.patients.length === 0) setShowPatientDetail(false);
+  }, [store.patients.length]);
 
   if (!isAuthenticated) {
     return <Auth onSignIn={signIn} onSignUp={signUp} />;

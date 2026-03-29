@@ -14,11 +14,20 @@ export function SearchView({ patients, onSelectPatient }: SearchViewProps) {
   const results = query.trim()
     ? patients.flatMap((p) => {
         const items: { type: "patient" | "visit"; patient: Patient; label: string; sub: string }[] = [];
-        if (p.name.toLowerCase().includes(query.toLowerCase())) {
-          items.push({ type: "patient", patient: p, label: p.name, sub: `${p.age}y · ${p.gender}` });
+        const q = query.toLowerCase();
+        if (
+          p.name.toLowerCase().includes(q) ||
+          p.uiId.toLowerCase().includes(q)
+        ) {
+          items.push({
+            type: "patient",
+            patient: p,
+            label: p.name,
+            sub: `ID ${p.uiId} · ${p.age}y · ${p.gender}`,
+          });
         }
         p.visits.forEach((v) => {
-          if (v.diagnosis.toLowerCase().includes(query.toLowerCase())) {
+          if (v.diagnosis.toLowerCase().includes(q)) {
             items.push({ type: "visit", patient: p, label: v.diagnosis, sub: `${p.name} · ${v.date}` });
           }
         });

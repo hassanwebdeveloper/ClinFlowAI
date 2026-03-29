@@ -11,8 +11,8 @@ interface PatientViewProps {
   patient: Patient;
   selectedVisitId: string;
   onSelectVisit: (id: string) => void;
-  onAddVisit: (visit: Visit) => void;
-  onUpdateSoap: (visitId: string, soap: Visit["soap"]) => void;
+  onAddVisit: (visit: Visit) => Promise<void>;
+  onUpdateSoap: (visitId: string, soap: Visit["soap"]) => Promise<void>;
 }
 
 export function PatientView({
@@ -29,8 +29,8 @@ export function PatientView({
     return (
       <NewVisitFlow
         patientName={patient.name}
-        onSave={(visit) => {
-          onAddVisit(visit);
+        onSave={async (visit) => {
+          await onAddVisit(visit);
           setShowNewVisit(false);
         }}
         onCancel={() => setShowNewVisit(false)}
@@ -49,7 +49,7 @@ export function PatientView({
           <div>
             <h2 className="text-lg font-semibold text-foreground">{patient.name}</h2>
             <p className="text-sm text-muted-foreground">
-              {patient.age} years · {patient.gender}
+              Ref. {patient.uiId} · {patient.age} years · {patient.gender}
             </p>
           </div>
         </div>
@@ -74,7 +74,7 @@ export function PatientView({
           {selectedVisit && (
             <VisitDetails
               visit={selectedVisit}
-              onUpdateSoap={(soap) => onUpdateSoap(selectedVisit.id, soap)}
+              onUpdateSoap={async (soap) => onUpdateSoap(selectedVisit.id, soap)}
             />
           )}
         </div>

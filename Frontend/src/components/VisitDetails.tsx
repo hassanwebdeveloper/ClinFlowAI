@@ -1,11 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Visit } from "@/hooks/usePatientStore";
 import { FileText, Pill, Paperclip, Check, Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface VisitDetailsProps {
   visit: Visit;
-  onUpdateSoap: (soap: Visit["soap"]) => void;
+  onUpdateSoap: (soap: Visit["soap"]) => Promise<void>;
 }
 
 const soapLabels = [
@@ -19,9 +19,17 @@ export function VisitDetails({ visit, onUpdateSoap }: VisitDetailsProps) {
   const [editingSoap, setEditingSoap] = useState<Record<string, boolean>>({});
   const [soapValues, setSoapValues] = useState(visit.soap);
 
-  const toggleEdit = (key: string) => {
+  useEffect(() => {
+    setSoapValues(visit.soap);
+  }, [visit.id, JSON.stringify(visit.soap)]);
+
+  const toggleEdit = async (key: string) => {
     if (editingSoap[key]) {
-      onUpdateSoap(soapValues);
+      try {
+        await onUpdateSoap(soapValues);
+      } catch {
+        return;
+      }
     }
     setEditingSoap((prev) => ({ ...prev, [key]: !prev[key] }));
   };
