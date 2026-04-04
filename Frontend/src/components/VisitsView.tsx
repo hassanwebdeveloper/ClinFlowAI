@@ -1,5 +1,6 @@
 import { CalendarDays } from "lucide-react";
 import type { Patient } from "@/hooks/usePatientStore";
+import { visitListLabel } from "@/lib/api";
 
 interface VisitsViewProps {
   patients: Patient[];
@@ -27,7 +28,7 @@ export function VisitsView({ patients, onSelectPatient }: VisitsViewProps) {
                   <CalendarDays className="h-4 w-4 text-primary" />
                 </div>
                 <div>
-                  <p className="text-sm font-semibold text-foreground">{visit.diagnosis}</p>
+                  <p className="text-sm font-semibold text-foreground">{visitListLabel(visit)}</p>
                   <p className="text-xs text-muted-foreground">{visit.patientName}</p>
                 </div>
               </div>

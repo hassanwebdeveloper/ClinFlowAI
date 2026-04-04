@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Search as SearchIcon, User, CalendarDays } from "lucide-react";
 import type { Patient } from "@/hooks/usePatientStore";
 import { cn } from "@/lib/utils";
+import { visitListLabel } from "@/lib/api";
 
 interface SearchViewProps {
   patients: Patient[];
@@ -27,8 +28,13 @@ export function SearchView({ patients, onSelectPatient }: SearchViewProps) {
           });
         }
         p.visits.forEach((v) => {
-          if (v.diagnosis.toLowerCase().includes(q)) {
-            items.push({ type: "visit", patient: p, label: v.diagnosis, sub: `${p.name} · ${v.date}` });
+          const label = visitListLabel(v);
+          if (
+            label.toLowerCase().includes(q) ||
+            v.diagnosis.toLowerCase().includes(q) ||
+            (v.visitTitle && v.visitTitle.toLowerCase().includes(q))
+          ) {
+            items.push({ type: "visit", patient: p, label, sub: `${p.name} · ${v.date}` });
           }
         });
         return items;

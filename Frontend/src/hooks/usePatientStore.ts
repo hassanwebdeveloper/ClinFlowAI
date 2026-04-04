@@ -2,15 +2,28 @@ import { useCallback, useEffect, useState } from "react";
 import type { ApiPatient } from "@/lib/api";
 import {
   addPatientVisitApi,
+  createVisitFromAudioApi,
   createPatientApi,
   fetchPatients,
+  patchVisitApi,
   patchVisitSoapApi,
+  regenerateVisitSoapApi,
+  visitToApi,
 } from "@/lib/api";
+import type { VisitPatchPayload } from "@/lib/api";
 
 export interface Visit {
   id: string;
   date: string;
   diagnosis: string;
+  visitTitle: string;
+  visitSummaryReport: string;
+  transcript?: string;
+  audioUrl?: string | null;
+  symptoms: string[];
+  duration: string;
+  medicalHistory: string[];
+  allergies: string[];
   soap: {
     subjective: string;
     objective: string;
@@ -42,6 +55,14 @@ function mapApiPatient(p: ApiPatient): Patient {
       id: v.id,
       date: v.date,
       diagnosis: v.diagnosis,
+      visitTitle: v.visit_title ?? "",
+      visitSummaryReport: v.visit_summary_report ?? "",
+      transcript: v.transcript ?? "",
+      audioUrl: v.audio_url ?? null,
+      symptoms: v.symptoms ?? [],
+      duration: v.duration ?? "",
+      medicalHistory: v.medical_history ?? [],
+      allergies: v.allergies ?? [],
       soap: { ...v.soap },
       prescriptions: v.prescriptions ?? [],
     })),
@@ -92,15 +113,45 @@ export function usePatientStore() {
   );
 
   const addVisit = useCallback(async (patientId: string, visit: Visit) => {
-    const updated = await addPatientVisitApi(patientId, visit);
+    const updated = await addPatientVisitApi(patientId, visitToApi(visit));
     const p = mapApiPatient(updated);
     setPatients((prev) => prev.map((x) => (x.id === patientId ? p : x)));
     setSelectedVisitId(visit.id);
   }, []);
 
+  const addVisitFromAudio = useCallback(
+    async (patientId: string, audio: Blob, diagnosis?: string) => {
+      const updated = await createVisitFromAudioApi({ patientId, audio, diagnosis });
+      const p = mapApiPatient(updated);
+      setPatients((prev) => prev.map((x) => (x.id === patientId ? p : x)));
+      const newVisitId = p.visits[0]?.id ?? "";
+      if (newVisitId) setSelectedVisitId(newVisitId);
+    },
+    []
+  );
+
   const updateVisitSoap = useCallback(
     async (patientId: string, visitId: string, soap: Visit["soap"]) => {
       const updated = await patchVisitSoapApi(patientId, visitId, soap);
+      const p = mapApiPatient(updated);
+      setPatients((prev) => prev.map((x) => (x.id === patientId ? p : x)));
+    },
+    []
+  );
+
+  const updateVisit = useCallback(async (patientId: string, visitId: string, patch: VisitPatchPayload) => {
+    const updated = await patchVisitApi(patientId, visitId, patch);
+    const p = mapApiPatient(updated);
+    setPatients((prev) => prev.map((x) => (x.id === patientId ? p : x)));
+  }, []);
+
+  const regenerateVisitSoap = useCallback(
+    async (patientId: string, visitId: string, transcript?: string) => {
+      const updated = await regenerateVisitSoapApi(
+        patientId,
+        visitId,
+        transcript !== undefined ? { transcript } : undefined
+      );
       const p = mapApiPatient(updated);
       setPatients((prev) => prev.map((x) => (x.id === patientId ? p : x)));
     },
@@ -117,6 +168,9 @@ export function usePatientStore() {
     setSelectedVisitId,
     addPatient,
     addVisit,
+    addVisitFromAudio,
     updateVisitSoap,
+    updateVisit,
+    regenerateVisitSoap,
   };
 }

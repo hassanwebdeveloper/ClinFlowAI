@@ -5,6 +5,7 @@ import { VisitTimeline } from "@/components/VisitTimeline";
 import { VisitDetails } from "@/components/VisitDetails";
 import { NewVisitFlow } from "@/components/NewVisitFlow";
 import type { Patient, Visit } from "@/hooks/usePatientStore";
+import type { VisitPatchPayload } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 interface PatientViewProps {
@@ -12,7 +13,10 @@ interface PatientViewProps {
   selectedVisitId: string;
   onSelectVisit: (id: string) => void;
   onAddVisit: (visit: Visit) => Promise<void>;
+  onAddVisitFromAudio: (audio: Blob) => Promise<void>;
   onUpdateSoap: (visitId: string, soap: Visit["soap"]) => Promise<void>;
+  onSaveVisit: (visitId: string, patch: VisitPatchPayload) => Promise<void>;
+  onRegenerateSoap: (visitId: string, transcript: string) => Promise<void>;
 }
 
 export function PatientView({
@@ -20,7 +24,10 @@ export function PatientView({
   selectedVisitId,
   onSelectVisit,
   onAddVisit,
+  onAddVisitFromAudio,
   onUpdateSoap,
+  onSaveVisit,
+  onRegenerateSoap,
 }: PatientViewProps) {
   const [showNewVisit, setShowNewVisit] = useState(false);
   const selectedVisit = patient.visits.find((v) => v.id === selectedVisitId) || patient.visits[0];
@@ -31,6 +38,10 @@ export function PatientView({
         patientName={patient.name}
         onSave={async (visit) => {
           await onAddVisit(visit);
+          setShowNewVisit(false);
+        }}
+        onSaveFromAudio={async (audio) => {
+          await onAddVisitFromAudio(audio);
           setShowNewVisit(false);
         }}
         onCancel={() => setShowNewVisit(false)}
@@ -74,7 +85,11 @@ export function PatientView({
           {selectedVisit && (
             <VisitDetails
               visit={selectedVisit}
+              patientId={patient.id}
               onUpdateSoap={async (soap) => onUpdateSoap(selectedVisit.id, soap)}
+              onSaveVisit={(patch) => onSaveVisit(selectedVisit.id, patch)}
+              onRegenerateSoap={(t) => onRegenerateSoap(selectedVisit.id, t)}
+              onSelectVisit={onSelectVisit}
             />
           )}
         </div>

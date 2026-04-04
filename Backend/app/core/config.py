@@ -21,6 +21,15 @@ class Settings(BaseSettings):
     ALGORITHM: str
     ACCESS_TOKEN_EXPIRE_MINUTES: int
 
+    # Together AI
+    TOGETHER_API_KEY: str = ""
+    TOGETHER_WHISPER_MODEL: str = "openai/whisper-large-v3"
+    TOGETHER_LLM_MODEL: str = "Qwen/Qwen3-235B-A22B-Instruct-2507-tput"
+    TOGETHER_EMBEDDING_MODEL: str = "togethercomputer/m2-bert-80M-8k-retrieval"
+
+    # Uploads
+    UPLOAD_DIR: str = "uploads"
+
     class Config:
         env_file = ".env"
 

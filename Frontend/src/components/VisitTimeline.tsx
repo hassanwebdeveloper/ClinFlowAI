@@ -1,5 +1,6 @@
 import { cn } from "@/lib/utils";
 import type { Visit } from "@/hooks/usePatientStore";
+import { visitListLabel } from "@/lib/api";
 
 interface VisitTimelineProps {
   visits: Visit[];
@@ -49,7 +50,7 @@ export function VisitTimeline({ visits, selectedVisitId, onSelectVisit }: VisitT
                   selectedVisitId === visit.id ? "text-primary" : "text-foreground"
                 )}
               >
-                {visit.diagnosis}
+                {visitListLabel(visit)}
               </p>
             </div>
           </div>

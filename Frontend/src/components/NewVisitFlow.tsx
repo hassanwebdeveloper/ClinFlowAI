@@ -8,15 +8,17 @@ import { toast } from "sonner";
 interface NewVisitFlowProps {
   patientName: string;
   onSave: (visit: Visit) => void | Promise<void>;
+  onSaveFromAudio: (audio: Blob) => void | Promise<void>;
   onCancel: () => void;
 }
 
 type RecordingState = "idle" | "recording" | "paused" | "stopped";
 
-export function NewVisitFlow({ patientName, onSave, onCancel }: NewVisitFlowProps) {
+export function NewVisitFlow({ patientName, onSave, onSaveFromAudio, onCancel }: NewVisitFlowProps) {
   const [recordingState, setRecordingState] = useState<RecordingState>("idle");
   const [timer, setTimer] = useState(0);
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
+  const [audioUrl, setAudioUrl] = useState<string>("");
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [transcript, setTranscript] = useState("");
   const [isTranscribing, setIsTranscribing] = useState(false);
@@ -26,6 +28,10 @@ export function NewVisitFlow({ patientName, onSave, onCancel }: NewVisitFlowProp
   const [isPlaying, setIsPlaying] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval>>();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const chunksRef = useRef<BlobPart[]>([]);
 
   useEffect(() => {
     if (recordingState === "recording") {
@@ -36,32 +42,83 @@ export function NewVisitFlow({ patientName, onSave, onCancel }: NewVisitFlowProp
     return () => clearInterval(timerRef.current);
   }, [recordingState]);
 
+  useEffect(() => {
+    if (!audioBlob) return;
+    const url = URL.createObjectURL(audioBlob);
+    setAudioUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [audioBlob]);
+
+  useEffect(() => {
+    return () => {
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        mediaRecorderRef.current.stop();
+      }
+      mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+    };
+  }, []);
+
   const formatTime = (s: number) => {
     const m = Math.floor(s / 60);
     const sec = s % 60;
     return `${m.toString().padStart(2, "0")}:${sec.toString().padStart(2, "0")}`;
   };
 
-  const startRecording = () => {
-    setRecordingState("recording");
-    setTimer(0);
-    setAudioBlob(null);
-    setTranscript("");
-    setSoap(null);
+  const startRecording = async () => {
+    try {
+      mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+      mediaStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+      chunksRef.current = [];
+      const recorder = new MediaRecorder(mediaStreamRef.current);
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (e: BlobEvent) => {
+        if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
+      };
+      recorder.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" });
+        setAudioBlob(blob);
+        setUploadedFile(null);
+        setRecordingState("stopped");
+        mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+      };
+
+      setTimer(0);
+      setAudioBlob(null);
+      setTranscript("");
+      setSoap(null);
+      setRecordingState("recording");
+      recorder.start();
+    } catch (e) {
+      toast.error("Microphone permission denied or not available");
+    }
   };
 
-  const pauseRecording = () => setRecordingState("paused");
-  const resumeRecording = () => setRecordingState("recording");
+  const pauseRecording = () => {
+    if (mediaRecorderRef.current?.state === "recording") {
+      mediaRecorderRef.current.pause();
+      setRecordingState("paused");
+    }
+  };
+  const resumeRecording = () => {
+    if (mediaRecorderRef.current?.state === "paused") {
+      mediaRecorderRef.current.resume();
+      setRecordingState("recording");
+    }
+  };
 
   const stopRecording = () => {
-    setRecordingState("stopped");
-    setAudioBlob(new Blob(["mock-audio"], { type: "audio/wav" }));
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+    }
   };
 
   const deleteRecording = () => {
     setRecordingState("idle");
     setTimer(0);
     setAudioBlob(null);
+    setAudioUrl("");
     setTranscript("");
     setSoap(null);
   };
@@ -69,6 +126,10 @@ export function NewVisitFlow({ patientName, onSave, onCancel }: NewVisitFlowProp
   const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        mediaRecorderRef.current.stop();
+      }
       setUploadedFile(file);
       setAudioBlob(file);
       setRecordingState("stopped");
@@ -79,6 +140,10 @@ export function NewVisitFlow({ patientName, onSave, onCancel }: NewVisitFlowProp
     e.preventDefault();
     const file = e.dataTransfer.files?.[0];
     if (file) {
+      mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        mediaRecorderRef.current.stop();
+      }
       setUploadedFile(file);
       setAudioBlob(file);
       setRecordingState("stopped");
@@ -86,13 +151,20 @@ export function NewVisitFlow({ patientName, onSave, onCancel }: NewVisitFlowProp
   };
 
   const generateTranscript = () => {
+    if (!audioBlob) return;
     setIsTranscribing(true);
     setTimeout(() => {
-      setTranscript(
-        "Patient presents with complaints of persistent headache for the past three days. The pain is described as throbbing, primarily in the frontal region, rated 6 out of 10. Patient reports associated nausea but no vomiting. No visual disturbances or aura. Patient has been taking over-the-counter ibuprofen with minimal relief. No recent head trauma. Sleep has been disrupted due to pain. Patient mentions increased stress at work recently."
-      );
-      setIsTranscribing(false);
-    }, 2000);
+      void (async () => {
+        try {
+          // Backend will transcribe + generate SOAP + save visit in one call.
+          await onSaveFromAudio(audioBlob);
+        } catch (e) {
+          toast.error(e instanceof Error ? e.message : "Could not transcribe audio");
+        } finally {
+          setIsTranscribing(false);
+        }
+      })();
+    }, 10);
   };
 
   const generateSoap = () => {
@@ -120,6 +192,14 @@ export function NewVisitFlow({ patientName, onSave, onCancel }: NewVisitFlowProp
           id: `v-${Date.now()}`,
           date: new Date().toISOString().split("T")[0],
           diagnosis: "Tension Headache",
+          visitTitle: "",
+          visitSummaryReport: "",
+          transcript: "",
+          audioUrl: null,
+          symptoms: [],
+          duration: "",
+          medicalHistory: [],
+          allergies: [],
           soap,
           prescriptions: [{ medicine: "Sumatriptan", dosage: "50mg", frequency: "As needed" }],
         };
@@ -207,27 +287,16 @@ export function NewVisitFlow({ patientName, onSave, onCancel }: NewVisitFlowProp
           {recordingState === "stopped" && (
             <div className="flex flex-col items-center gap-4 mt-4 w-full max-w-md">
               {/* Audio Playback Bar */}
-              <div className="w-full bg-accent/40 rounded-xl p-3 flex items-center gap-3 border border-border">
-                <button
-                  onClick={() => setIsPlaying(!isPlaying)}
-                  className="w-8 h-8 rounded-full bg-primary flex items-center justify-center flex-shrink-0 hover:bg-primary/90 transition-colors"
-                >
-                  {isPlaying ? (
-                    <Pause className="h-4 w-4 text-primary-foreground" />
-                  ) : (
-                    <Play className="h-4 w-4 text-primary-foreground" />
-                  )}
-                </button>
-                <div className="flex-1 h-1.5 bg-border rounded-full overflow-hidden">
-                  <div
-                    className={cn(
-                      "h-full bg-primary rounded-full transition-all duration-300",
-                      isPlaying && "animate-[playback_3s_linear_infinite]"
-                    )}
-                    style={{ width: isPlaying ? "100%" : "0%" }}
-                  />
-                </div>
-                <span className="text-xs text-muted-foreground font-mono">{formatTime(timer)}</span>
+              <div className="w-full bg-accent/40 rounded-xl p-3 border border-border">
+                <audio
+                  ref={audioRef}
+                  src={audioUrl || undefined}
+                  controls
+                  className="w-full"
+                  onPlay={() => setIsPlaying(true)}
+                  onPause={() => setIsPlaying(false)}
+                  onEnded={() => setIsPlaying(false)}
+                />
               </div>
               <div className="flex gap-2">
                 <Button variant="outline" size="sm" onClick={deleteRecording}>

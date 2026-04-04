@@ -40,6 +40,9 @@ app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 # Mount the frontend dist directory (Vite build output)
 app.mount("/assets", StaticFiles(directory="../Frontend/dist/assets"), name="assets")
 
+# Serve uploaded audio files
+app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="uploads")
+
 @app.get("/{full_path:path}")
 async def serve_frontend(full_path: str):
     # Serve the frontend dist/index.html for all non-API routes

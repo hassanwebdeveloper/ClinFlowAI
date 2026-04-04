@@ -18,6 +18,14 @@ class VisitIn(BaseModel):
     id: str
     date: str
     diagnosis: str
+    visit_title: str = ""
+    visit_summary_report: str = ""
+    transcript: str = ""
+    audio_url: str | None = None
+    symptoms: list[str] = Field(default_factory=list)
+    duration: str = ""
+    medical_history: list[str] = Field(default_factory=list)
+    allergies: list[str] = Field(default_factory=list)
     soap: SoapBlock
     prescriptions: list[Prescription] = Field(default_factory=list)
 
@@ -43,3 +51,36 @@ class VisitSoapPatch(BaseModel):
     objective: str
     assessment: str
     plan: str
+
+
+class VisitPatch(BaseModel):
+    transcript: str | None = None
+    diagnosis: str | None = None
+    visit_title: str | None = None
+    visit_summary_report: str | None = None
+    date: str | None = None
+    symptoms: list[str] | None = None
+    duration: str | None = None
+    medical_history: list[str] | None = None
+    allergies: list[str] | None = None
+
+
+class RegenerateSoapRequest(BaseModel):
+    """If transcript is set, it replaces the visit transcript before regeneration."""
+    transcript: str | None = None
+
+
+class VisitReference(BaseModel):
+    visit_id: str
+    visit_title: str
+    visit_date: str
+    relevance_snippet: str
+
+
+class AiSuggestion(BaseModel):
+    suggestion: str
+    references: list[VisitReference] = Field(default_factory=list)
+
+
+class AiSuggestionsResponse(BaseModel):
+    suggestions: list[AiSuggestion] = Field(default_factory=list)
