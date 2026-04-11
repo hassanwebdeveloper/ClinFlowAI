@@ -5,7 +5,7 @@ import { VisitTimeline } from "@/components/VisitTimeline";
 import { VisitDetails } from "@/components/VisitDetails";
 import { NewVisitFlow } from "@/components/NewVisitFlow";
 import type { Patient, Visit } from "@/hooks/usePatientStore";
-import type { VisitPatchPayload } from "@/lib/api";
+import type { LabCacheEntry, PrepareVisitAudioResult, VisitPatchPayload } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 interface PatientViewProps {
@@ -13,7 +13,16 @@ interface PatientViewProps {
   selectedVisitId: string;
   onSelectVisit: (id: string) => void;
   onAddVisit: (visit: Visit) => Promise<void>;
-  onAddVisitFromAudio: (audio: Blob) => Promise<void>;
+  onAddVisitFromAudio: (audios: Blob[], labReports?: { blob: Blob; filename: string }[]) => Promise<void>;
+  onPrepareVisitFromAudio: (
+    audios: Blob[],
+    labReports: { blob: Blob; filename: string }[]
+  ) => Promise<PrepareVisitAudioResult>;
+  onFinalizeVisitFromAudio: (
+    audios: Blob[],
+    labReports: { blob: Blob; filename: string }[],
+    opts: { transcript: string; labCache: LabCacheEntry[]; labTestNames: string[] }
+  ) => Promise<void>;
   onUpdateSoap: (visitId: string, soap: Visit["soap"]) => Promise<void>;
   onSaveVisit: (visitId: string, patch: VisitPatchPayload) => Promise<void>;
   onRegenerateSoap: (visitId: string, transcript: string) => Promise<void>;
@@ -25,6 +34,8 @@ export function PatientView({
   onSelectVisit,
   onAddVisit,
   onAddVisitFromAudio,
+  onPrepareVisitFromAudio,
+  onFinalizeVisitFromAudio,
   onUpdateSoap,
   onSaveVisit,
   onRegenerateSoap,
@@ -35,13 +46,19 @@ export function PatientView({
   if (showNewVisit) {
     return (
       <NewVisitFlow
+        patientId={patient.id}
         patientName={patient.name}
         onSave={async (visit) => {
           await onAddVisit(visit);
           setShowNewVisit(false);
         }}
-        onSaveFromAudio={async (audio) => {
-          await onAddVisitFromAudio(audio);
+        onSaveFromAudio={async (audios, labReports) => {
+          await onAddVisitFromAudio(audios, labReports);
+          setShowNewVisit(false);
+        }}
+        onPrepareVisitFromAudio={onPrepareVisitFromAudio}
+        onFinalizeVisitFromAudio={async (audios, labs, opts) => {
+          await onFinalizeVisitFromAudio(audios, labs, opts);
           setShowNewVisit(false);
         }}
         onCancel={() => setShowNewVisit(false)}
@@ -62,6 +79,11 @@ export function PatientView({
             <p className="text-sm text-muted-foreground">
               Ref. {patient.uiId} · {patient.age} years · {patient.gender}
             </p>
+            {patient.labReports.length > 0 && (
+              <p className="text-xs text-muted-foreground mt-1">
+                {patient.labReports.length} lab report{patient.labReports.length !== 1 ? "s" : ""} on file
+              </p>
+            )}
           </div>
         </div>
         <Button onClick={() => setShowNewVisit(true)} size="sm">

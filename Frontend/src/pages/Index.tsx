@@ -52,8 +52,14 @@ const Index = () => {
             selectedVisitId={store.selectedVisitId}
             onSelectVisit={store.setSelectedVisitId}
             onAddVisit={(visit) => store.addVisit(store.selectedPatientId, visit)}
-            onAddVisitFromAudio={(audio) =>
-              store.addVisitFromAudio(store.selectedPatientId, audio, "Visit")
+            onAddVisitFromAudio={(audios, labReports) =>
+              store.addVisitFromAudio(store.selectedPatientId, audios, "Visit", labReports)
+            }
+            onPrepareVisitFromAudio={(audios, labs) =>
+              store.prepareVisitFromAudio(store.selectedPatientId, audios, labs)
+            }
+            onFinalizeVisitFromAudio={(audios, labs, opts) =>
+              store.finalizeVisitFromAudio(store.selectedPatientId, audios, labs, opts)
             }
             onUpdateSoap={(visitId, soap) =>
               store.updateVisitSoap(store.selectedPatientId, visitId, soap)

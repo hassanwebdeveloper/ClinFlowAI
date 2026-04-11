@@ -7,10 +7,22 @@ import {
   fetchPatients,
   patchVisitApi,
   patchVisitSoapApi,
+  prepareVisitFromAudioApi,
   regenerateVisitSoapApi,
   visitToApi,
 } from "@/lib/api";
-import type { VisitPatchPayload } from "@/lib/api";
+import type { LabCacheEntry, VisitPatchPayload, VisitFromAudioLabFile } from "@/lib/api";
+
+export interface LabReportRecord {
+  id: string;
+  recordedAt: string;
+  filename: string;
+  extractionMethod: string;
+  details: string;
+  testName: string;
+  visitId?: string;
+  fileUrl?: string | null;
+}
 
 export interface Visit {
   id: string;
@@ -20,10 +32,16 @@ export interface Visit {
   visitSummaryReport: string;
   transcript?: string;
   audioUrl?: string | null;
+  /** All saved audio paths for this visit (same order as recording/upload). */
+  audioUrls?: string[];
+  /** Extracted lab text used when generating this visit’s notes. */
+  labReportDetails?: string;
   symptoms: string[];
   duration: string;
   medicalHistory: string[];
   allergies: string[];
+  prescribedMedicines: string[];
+  prescribedLabTests: string[];
   soap: {
     subjective: string;
     objective: string;
@@ -42,15 +60,27 @@ export interface Patient {
   age: number;
   gender: string;
   visits: Visit[];
+  labReports: LabReportRecord[];
 }
 
 function mapApiPatient(p: ApiPatient): Patient {
+  const labReports: LabReportRecord[] = (p.lab_reports ?? []).map((r) => ({
+    id: r.id,
+    recordedAt: r.recorded_at,
+    filename: r.filename,
+    extractionMethod: r.extraction_method,
+    details: r.details,
+    testName: r.test_name ?? "",
+    visitId: r.visit_id,
+    fileUrl: r.file_url ?? null,
+  }));
   return {
     id: p.id,
     uiId: p.ui_id,
     name: p.name,
     age: p.age,
     gender: p.gender,
+    labReports,
     visits: p.visits.map((v) => ({
       id: v.id,
       date: v.date,
@@ -59,10 +89,19 @@ function mapApiPatient(p: ApiPatient): Patient {
       visitSummaryReport: v.visit_summary_report ?? "",
       transcript: v.transcript ?? "",
       audioUrl: v.audio_url ?? null,
+      audioUrls:
+        v.audio_urls?.length
+          ? v.audio_urls
+          : v.audio_url
+            ? [v.audio_url]
+            : [],
+      labReportDetails: v.lab_report_details ?? "",
       symptoms: v.symptoms ?? [],
       duration: v.duration ?? "",
       medicalHistory: v.medical_history ?? [],
       allergies: v.allergies ?? [],
+      prescribedMedicines: v.prescribed_medicines ?? [],
+      prescribedLabTests: v.prescribed_lab_tests ?? [],
       soap: { ...v.soap },
       prescriptions: v.prescriptions ?? [],
     })),
@@ -120,8 +159,49 @@ export function usePatientStore() {
   }, []);
 
   const addVisitFromAudio = useCallback(
-    async (patientId: string, audio: Blob, diagnosis?: string) => {
-      const updated = await createVisitFromAudioApi({ patientId, audio, diagnosis });
+    async (
+      patientId: string,
+      audios: Blob[],
+      diagnosis?: string,
+      labReports?: VisitFromAudioLabFile[]
+    ) => {
+      const updated = await createVisitFromAudioApi({
+        patientId,
+        audios,
+        diagnosis,
+        labReports: labReports?.length ? labReports : undefined,
+      });
+      const p = mapApiPatient(updated);
+      setPatients((prev) => prev.map((x) => (x.id === patientId ? p : x)));
+      const newVisitId = p.visits[0]?.id ?? "";
+      if (newVisitId) setSelectedVisitId(newVisitId);
+    },
+    []
+  );
+
+  const prepareVisitFromAudio = useCallback(
+    async (patientId: string, audios: Blob[], labReports: VisitFromAudioLabFile[]) => {
+      return prepareVisitFromAudioApi({ patientId, audios, labReports });
+    },
+    []
+  );
+
+  const finalizeVisitFromAudio = useCallback(
+    async (
+      patientId: string,
+      audios: Blob[],
+      labReports: VisitFromAudioLabFile[],
+      opts: { transcript: string; labCache: LabCacheEntry[]; labTestNames: string[] }
+    ) => {
+      const updated = await createVisitFromAudioApi({
+        patientId,
+        audios,
+        diagnosis: "Visit",
+        labReports,
+        transcript: opts.transcript,
+        labCache: opts.labCache,
+        labTestNames: opts.labTestNames,
+      });
       const p = mapApiPatient(updated);
       setPatients((prev) => prev.map((x) => (x.id === patientId ? p : x)));
       const newVisitId = p.visits[0]?.id ?? "";
@@ -169,6 +249,8 @@ export function usePatientStore() {
     addPatient,
     addVisit,
     addVisitFromAudio,
+    prepareVisitFromAudio,
+    finalizeVisitFromAudio,
     updateVisitSoap,
     updateVisit,
     regenerateVisitSoap,

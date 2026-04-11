@@ -66,6 +66,8 @@ export function VisitDetails({
   const [duration, setDuration] = useState(visit.duration);
   const [historyText, setHistoryText] = useState(listToLines(visit.medicalHistory));
   const [allergiesText, setAllergiesText] = useState(listToLines(visit.allergies));
+  const [medicinesText, setMedicinesText] = useState(listToLines(visit.prescribedMedicines));
+  const [labTestsText, setLabTestsText] = useState(listToLines(visit.prescribedLabTests));
 
   const [editingMeta, setEditingMeta] = useState<Record<string, boolean>>({});
   const [editingExtra, setEditingExtra] = useState<Record<string, boolean>>({});
@@ -105,6 +107,8 @@ export function VisitDetails({
     setDuration(visit.duration);
     setHistoryText(listToLines(visit.medicalHistory));
     setAllergiesText(listToLines(visit.allergies));
+    setMedicinesText(listToLines(visit.prescribedMedicines));
+    setLabTestsText(listToLines(visit.prescribedLabTests));
   }, [
     visit.id,
     visit.date,
@@ -115,6 +119,8 @@ export function VisitDetails({
     JSON.stringify(visit.symptoms),
     JSON.stringify(visit.medicalHistory),
     JSON.stringify(visit.allergies),
+    JSON.stringify(visit.prescribedMedicines),
+    JSON.stringify(visit.prescribedLabTests),
   ]);
 
   const handleRegenerate = async () => {
@@ -134,6 +140,8 @@ export function VisitDetails({
         duration,
         medical_history: linesToList(historyText),
         allergies: linesToList(allergiesText),
+        prescribed_medicines: linesToList(medicinesText),
+        prescribed_lab_tests: linesToList(labTestsText),
       });
       await onRegenerateSoap(transcript);
       toast.success("Saved and regenerated structured notes");
@@ -186,7 +194,9 @@ export function VisitDetails({
     setEditingMeta((prev) => ({ ...prev, [key]: false }));
   };
 
-  const saveExtra = async (key: "symptoms" | "duration" | "history" | "allergies") => {
+  const saveExtra = async (
+    key: "symptoms" | "duration" | "history" | "allergies" | "medicines" | "labTests",
+  ) => {
     try {
       const patch: VisitPatchPayload =
         key === "symptoms"
@@ -195,7 +205,11 @@ export function VisitDetails({
             ? { duration }
             : key === "history"
               ? { medical_history: linesToList(historyText) }
-              : { allergies: linesToList(allergiesText) };
+              : key === "allergies"
+                ? { allergies: linesToList(allergiesText) }
+                : key === "medicines"
+                  ? { prescribed_medicines: linesToList(medicinesText) }
+                  : { prescribed_lab_tests: linesToList(labTestsText) };
       await onSaveVisit(patch);
       setEditingExtra((prev) => ({ ...prev, [key]: false }));
       toast.success("Saved");
@@ -204,11 +218,13 @@ export function VisitDetails({
     }
   };
 
-  const cancelExtra = (key: "symptoms" | "duration" | "history" | "allergies") => {
+  const cancelExtra = (key: "symptoms" | "duration" | "history" | "allergies" | "medicines" | "labTests") => {
     if (key === "symptoms") setSymptomsText(listToLines(visit.symptoms));
     if (key === "duration") setDuration(visit.duration);
     if (key === "history") setHistoryText(listToLines(visit.medicalHistory));
     if (key === "allergies") setAllergiesText(listToLines(visit.allergies));
+    if (key === "medicines") setMedicinesText(listToLines(visit.prescribedMedicines));
+    if (key === "labTests") setLabTestsText(listToLines(visit.prescribedLabTests));
     setEditingExtra((prev) => ({ ...prev, [key]: false }));
   };
 
@@ -336,7 +352,7 @@ export function VisitDetails({
       <div className="bg-card rounded-2xl border border-border card-shadow p-5">
         <h3 className="font-semibold text-foreground text-sm mb-1">Additional information</h3>
         <p className="text-xs text-muted-foreground mb-4">
-          Symptoms, duration, relevant history, allergies.
+          Symptoms, duration, relevant history, allergies, prescribed medicines, and lab tests from the transcript.
         </p>
         <div className="space-y-4">
           <div>
@@ -447,6 +463,62 @@ export function VisitDetails({
               </div>
             ) : (
               <ReadonlyBlock text={allergiesText} emptyLabel="Not mentioned" />
+            )}
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <Label className="text-xs">Prescribed medicines</Label>
+              {!editingExtra.medicines && penBtn(() => setEditingExtra((p) => ({ ...p, medicines: true })))}
+            </div>
+            {editingExtra.medicines ? (
+              <div className="space-y-2">
+                <textarea
+                  value={medicinesText}
+                  onChange={(e) => setMedicinesText(e.target.value)}
+                  placeholder="One medicine per line (as stated in the transcript)"
+                  rows={3}
+                  className="w-full text-sm bg-accent/30 rounded-xl p-3 border border-border focus:outline-none focus:ring-2 focus:ring-primary/20 resize-none text-foreground"
+                />
+                <div className="flex gap-2">
+                  <Button type="button" size="sm" onClick={() => saveExtra("medicines")}>
+                    Save
+                  </Button>
+                  <Button type="button" size="sm" variant="outline" onClick={() => cancelExtra("medicines")}>
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <ReadonlyBlock text={medicinesText} emptyLabel="None extracted" />
+            )}
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <Label className="text-xs">Lab tests and investigations</Label>
+              {!editingExtra.labTests && penBtn(() => setEditingExtra((p) => ({ ...p, labTests: true })))}
+            </div>
+            {editingExtra.labTests ? (
+              <div className="space-y-2">
+                <textarea
+                  value={labTestsText}
+                  onChange={(e) => setLabTestsText(e.target.value)}
+                  placeholder="One test per line (e.g. CBC, chest X-ray)"
+                  rows={3}
+                  className="w-full text-sm bg-accent/30 rounded-xl p-3 border border-border focus:outline-none focus:ring-2 focus:ring-primary/20 resize-none text-foreground"
+                />
+                <div className="flex gap-2">
+                  <Button type="button" size="sm" onClick={() => saveExtra("labTests")}>
+                    Save
+                  </Button>
+                  <Button type="button" size="sm" variant="outline" onClick={() => cancelExtra("labTests")}>
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <ReadonlyBlock text={labTestsText} emptyLabel="None extracted" />
             )}
           </div>
         </div>
@@ -586,6 +658,18 @@ export function VisitDetails({
               <ReadonlyBlock text={transcript} emptyLabel="No transcript" />
             )}
           </div>
+
+          {visit.labReportDetails?.trim() ? (
+            <div className="mt-6">
+              <Label className="text-xs">Lab / document extraction (used for structured notes)</Label>
+              <p className="text-xs text-muted-foreground mb-1.5 mt-1">
+                From uploads during visit creation; included again when you regenerate notes from the transcript. The
+                overall ordered lab test may be tagged [one-time] or [monitoring] when the source document supported that
+                inference (whole test, not each result line).
+              </p>
+              <ReadonlyBlock text={visit.labReportDetails} emptyLabel="No lab data" />
+            </div>
+          ) : null}
         </div>
 
         <div className="mt-4 pt-4 border-t border-border">
@@ -599,7 +683,8 @@ export function VisitDetails({
           </Button>
           <p className="text-xs text-muted-foreground mt-2">
             Saves transcript, date, visit title, summary report, and additional fields, then regenerates SOAP,
-            visit title, summary report, and structured extraction from the transcript.
+            visit title, summary report, medicines, lab tests, and other structured extraction from the transcript
+            {visit.labReportDetails?.trim() ? " (lab document text for this visit is included automatically)." : "."}
           </p>
         </div>
       </div>

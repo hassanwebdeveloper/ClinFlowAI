@@ -1,3 +1,4 @@
+import base64
 import json
 import math
 from typing import Any
@@ -82,8 +83,112 @@ async def _chat_completion(messages: list[dict[str, str]], *, force_json: bool) 
     if not isinstance(content, str) or not content.strip():
         content = choice0.get("text", "") or ""
     if not isinstance(content, str) or not content.strip():
-        raise ValueError("LLM returned empty SOAP")
+        raise ValueError("LLM returned empty response")
     return content.strip()
+
+
+async def _chat_completion_multimodal(
+    messages: list[dict[str, Any]],
+    *,
+    model: str,
+    temperature: float = 0.1,
+) -> str:
+    if not settings.TOGETHER_API_KEY:
+        raise ValueError("TOGETHER_API_KEY is not configured")
+    headers = {
+        "Authorization": f"Bearer {settings.TOGETHER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    body: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+    }
+    async with httpx.AsyncClient(timeout=180) as client:
+        resp = await client.post(
+            f"{TOGETHER_BASE_URL}/chat/completions",
+            headers=headers,
+            json=body,
+        )
+    resp.raise_for_status()
+    data: dict[str, Any] = resp.json()
+    choice0 = (data.get("choices") or [{}])[0] or {}
+    content = ((choice0.get("message", {}) or {}).get("content", "")) or ""
+    if not isinstance(content, str) or not content.strip():
+        content = choice0.get("text", "") or ""
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("Vision model returned empty response")
+    return content.strip()
+
+
+LAB_VL_SYSTEM = """You extract information from medical laboratory reports shown in images.
+
+Rules:
+- On the FIRST line of your reply, output exactly one line: LAB_TEST_NAME: <name>
+  Here <name> is the single overall lab test or order this report is for — the name the clinician ordered and the lab printed as the report title or main heading (e.g. "Complete Blood Count", "CBC", "Comprehensive Metabolic Panel", "Lipid Profile", "HbA1c"). A typical CBC report lists many separate result lines (WBC, RBC, hemoglobin, platelets, etc.); those are NOT the lab test name — the lab test name is the one umbrella order that covers that whole report. Use the wording from the document or a standard abbreviation if it clearly refers to the same order. If the document has only unrelated standalone tests and no clear overall ordered test name, output exactly: LAB_TEST_NAME: UNKNOWN
+- Then one blank line, then exactly one line: LAB_TEST_PATTERN: <tag> where <tag> must be exactly one of: [one-time]  OR  [monitoring]  OR  [unclear — insufficient context]
+  This tag applies only to the **overall ordered lab test** (the LAB_TEST_NAME), not to individual analytes. Decide from the document whether this **order** is a one-off diagnostic snapshot ([one-time]) vs repeating / serial follow-up / chronic surveillance / standing protocol ([monitoring]). Use cues such as: "serial", "repeat", "monitor", "follow-up", "standing order", "q.weekly", prior dates for the same test, multiple timepoints on one report, "recheck", interval orders. If the document does not give enough context to tell, use [unclear — insufficient context].
+- Then one blank line, then the rest of the extraction.
+- Transcribe every result line: analyte name, value, unit, reference range, and abnormal flags (H/L/critical) when visible. Do **not** append [one-time], [monitoring], or [unclear] to individual result lines — only the single LAB_TEST_PATTERN line above applies to the whole test.
+- Include collection dates and lab facility name if shown.
+- Do NOT guess missing numbers or normal ranges.
+- If text is unreadable, say so briefly.
+- Output plain English or standard lab line format; no JSON."""
+
+
+async def extract_lab_report_with_vl(image_bytes: bytes, mime_type: str) -> str:
+    if not mime_type.startswith("image/"):
+        mime_type = "image/png"
+    b64 = base64.standard_b64encode(image_bytes).decode("ascii")
+    data_uri = f"data:{mime_type};base64,{b64}"
+    user_content: list[dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": (
+                "Extract all laboratory results and relevant identifiers from this image. "
+                "Follow the LAB_TEST_NAME and LAB_TEST_PATTERN header rules in the system message "
+                "(pattern applies to the whole ordered test, not each result line)."
+            ),
+        },
+        {"type": "image_url", "image_url": {"url": data_uri}},
+    ]
+    messages = [
+        {"role": "system", "content": LAB_VL_SYSTEM},
+        {"role": "user", "content": user_content},
+    ]
+    return await _chat_completion_multimodal(
+        messages,
+        model=settings.TOGETHER_VL_MODEL,
+        temperature=0.1,
+    )
+
+
+LAB_TEXT_SYSTEM = """You normalize raw text from laboratory or pathology reports into a clear clinical summary.
+
+Rules:
+- On the FIRST line of your reply, output exactly one line: LAB_TEST_NAME: <name> for the single overall lab test or order this document represents (e.g. the prescribed test such as Complete Blood Count / CBC, CMP, lipid profile, HbA1c) as printed in the report title, requisition, or main heading — not the individual analyte lines inside the report. If there is no clear overall ordered test name, output exactly: LAB_TEST_NAME: UNKNOWN
+- Then one blank line, then exactly one line: LAB_TEST_PATTERN: <tag> where <tag> is exactly [one-time] OR [monitoring] OR [unclear — insufficient context]. This classifies the **whole ordered lab test** (LAB_TEST_NAME), not each analyte line: one-off diagnostic draw vs repeating / serial / monitoring order. Use document cues (e.g. repeat, recheck, monitor, follow-up, standing order, multiple timepoints, interval language). If insufficient context, use [unclear — insufficient context].
+- Then one blank line, then the bullet/list summary.
+- List each result line with analyte name, value, unit, reference range if given, and abnormal flags when present. Do **not** add [one-time], [monitoring], or [unclear] tags to individual lines.
+- Do NOT invent values; if unclear write \"unclear\".
+- Prefer bullet lines; omit clinic letterhead and boilerplate when possible.
+- If the text is not a lab report, summarize only factual test-like content you find."""
+
+
+async def normalize_lab_report_from_text(raw_document_text: str) -> str:
+    if not settings.TOGETHER_API_KEY:
+        raise ValueError("TOGETHER_API_KEY is not configured")
+    text = raw_document_text.strip()
+    if not text:
+        raise ValueError("Empty lab document text")
+    cap = 48_000
+    if len(text) > cap:
+        text = text[:cap] + "\n\n[truncated]"
+    messages = [
+        {"role": "system", "content": LAB_TEXT_SYSTEM},
+        {"role": "user", "content": f"Document text:\n\n{text}"},
+    ]
+    return await _chat_completion(messages, force_json=False)
 
 
 def _norm_str_list(val: Any) -> list[str]:
@@ -96,7 +201,11 @@ def _norm_str_list(val: Any) -> list[str]:
     return []
 
 
-async def generate_soap_from_transcript(transcript: str, patient_info: dict[str, Any]) -> dict[str, Any]:
+async def generate_soap_from_transcript(
+    transcript: str,
+    patient_info: dict[str, Any],
+    lab_report_context: str | None = None,
+) -> dict[str, Any]:
     if not settings.TOGETHER_API_KEY:
         raise ValueError("TOGETHER_API_KEY is not configured")
     system = """You are a clinical documentation assistant.
@@ -114,10 +223,17 @@ IMPORTANT RULES:
 
     user = f"""Convert the following doctor summary into a structured clinical note.
 
+The summary may come from multiple sequential recordings of the same visit, separated by lines like "--- Recording N ---". Treat them as one continuous encounter and produce a single unified note (do not duplicate or contradict; merge related information).
+
 -----------------------------------
 DOCTOR SUMMARY:
 {transcript}
 -----------------------------------
+
+LAB / INVESTIGATION DATA (from uploaded lab documents for this visit; may be empty):
+{(lab_report_context or "").strip() or "(No lab documents provided)"}
+
+Each extracted lab line may end with a tag: [one-time] (single/episodic test), [monitoring] (repeating/serial/surveillance), or [unclear — insufficient context]. Preserve that distinction in Objective when summarizing labs; in Plan, reflect ongoing monitoring only when supported by [monitoring] tags or the doctor summary.
 
 - Patient information: 
     name: {patient_info.get("name", "")}
@@ -130,8 +246,10 @@ Extract the following information from the doctor summary:
 - Duration
 - Relevant history
 - Allergies
+- Medicines explicitly prescribed or ordered by the doctor in this visit (drug names only or short phrases; empty if none mentioned)
+- Lab tests, imaging, or investigations explicitly ordered or requested (e.g. CBC, X-ray, HbA1c); empty if none mentioned
 
-Also write the SOAP note from doctor summary.
+Also write the SOAP note from the doctor summary AND the lab / investigation data above.
 
 SOAP Note is:
 
@@ -141,7 +259,8 @@ Subjective:
 - Relevant history
 
 Objective:
-- Any measurable findings (if mentioned)
+- Include pertinent lab values and impressions from the LAB / INVESTIGATION DATA section when provided
+- Any measurable findings from the doctor summary (vitals, exam) if mentioned
 
 Assessment:
 - Likely condition based on doctor's summary
@@ -161,6 +280,8 @@ JSON format:
   "duration": "",
   "medical_history": [],
   "allergies": [],
+  "prescribed_medicines": [],
+  "prescribed_lab_tests": [],
   "soap": {{
     "subjective": "",
     "objective": "",
@@ -171,6 +292,8 @@ JSON format:
 
 - visit_title: Short title for the visit list (e.g. "Presenting with fever and chills"). No patient name required.
 - visit_summary_report: 1-3 sentences summarizing the visit, starting with patient demographics using the provided name, age, and gender (e.g. "Kamran, 34-year-old male, …") then the reason for visit and key points. Use "Not mentioned" only if demographics are missing.
+- prescribed_medicines: list of medicines the doctor prescribed or ordered in the transcript only; use [] if none.
+- prescribed_lab_tests: list of labs/imaging/investigations ordered; use [] if none.
 
 ------------------------------------
 RULES:
@@ -223,6 +346,8 @@ RULES:
         "duration": str(parsed.get("duration", "")).strip(),
         "medical_history": _norm_str_list(parsed.get("medical_history")),
         "allergies": _norm_str_list(parsed.get("allergies")),
+        "prescribed_medicines": _norm_str_list(parsed.get("prescribed_medicines")),
+        "prescribed_lab_tests": _norm_str_list(parsed.get("prescribed_lab_tests")),
         "soap": soap,
     }
 

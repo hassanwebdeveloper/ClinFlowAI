@@ -8,6 +8,8 @@ export default defineConfig(({ mode }) => ({
   server: {
     host: "::",
     port: 8080,
+    // ngrok and similar tunnels send a Host header Vite blocks by default
+    allowedHosts: [".ngrok-free.app", ".ngrok.app", ".ngrok.io"],
     hmr: {
       overlay: false,
     },
