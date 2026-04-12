@@ -36,7 +36,7 @@ from app.services.together import (
     generate_ai_suggestions,
     generate_embedding,
     generate_soap_from_transcript,
-    transcribe_whisper,
+    transcribe_visit_audio,
 )
 
 router = APIRouter()
@@ -336,7 +336,7 @@ async def prepare_visit_from_audio(
         async def run_transcripts() -> str:
             parts: list[str] = []
             for idx, path in enumerate(audio_tmp_paths):
-                t = await transcribe_whisper(path)
+                t = await transcribe_visit_audio(path)
                 parts.append(f"--- Recording {idx + 1} ---\n{t}")
             return "\n\n".join(parts)
 
@@ -454,7 +454,7 @@ async def create_visit_from_audio(
                 return transcript_override
             parts: list[str] = []
             for idx, path in enumerate(audio_tmp_paths):
-                t = await transcribe_whisper(path)
+                t = await transcribe_visit_audio(path)
                 parts.append(f"--- Recording {idx + 1} ---\n{t}")
             return "\n\n".join(parts)
 

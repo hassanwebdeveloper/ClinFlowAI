@@ -11,18 +11,25 @@ from app.core.config import settings
 TOGETHER_BASE_URL = "https://api.together.xyz/v1"
 
 
-async def transcribe_whisper(file_path: str, language: str = "en") -> str:
+async def transcribe_whisper(
+    file_path: str,
+    language: str = "en",
+    *,
+    translate_to_english: bool = False,
+) -> str:
     if not settings.TOGETHER_API_KEY:
         raise ValueError("TOGETHER_API_KEY is not configured")
     headers = {"Authorization": f"Bearer {settings.TOGETHER_API_KEY}"}
     async with httpx.AsyncClient(timeout=180) as client:
         with open(file_path, "rb") as f:
             files = {"file": (file_path, f, "application/octet-stream")}
-            data = {
+            data: dict[str, Any] = {
                 "model": settings.TOGETHER_WHISPER_MODEL,
-                "language": language,
                 "response_format": "json",
+                "task": "translate" if translate_to_english else "transcribe",
             }
+            if not translate_to_english and language:
+                data["language"] = language
             resp = await client.post(
                 f"{TOGETHER_BASE_URL}/audio/transcriptions",
                 headers=headers,
@@ -35,6 +42,24 @@ async def transcribe_whisper(file_path: str, language: str = "en") -> str:
     if not isinstance(text, str) or not text.strip():
         raise ValueError("Whisper returned empty transcript")
     return text.strip()
+
+
+async def transcribe_visit_audio(file_path: str, language: str = "en") -> str:
+    """Route visit audio to Together Whisper or Soniox based on TRANSCRIPTION_PROVIDER."""
+    translate = settings.TRANSCRIBE_TRANSLATE_TO_ENGLISH
+    if settings.TRANSCRIPTION_PROVIDER == "together":
+        return await transcribe_whisper(
+            file_path,
+            language,
+            translate_to_english=translate,
+        )
+    from app.services.soniox_stt import transcribe_audio_file
+
+    return await transcribe_audio_file(
+        file_path,
+        language,
+        translate_to_english=translate,
+    )
 
 
 SOAP_SCHEMA_HINT = {
