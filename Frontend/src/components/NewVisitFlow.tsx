@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useLayoutEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from "react";
 import {
   Mic,
   Square,
@@ -6,7 +6,6 @@ import {
   Play,
   Trash2,
   Upload,
-  RotateCcw,
   Loader2,
   ArrowLeft,
   ListMusic,
@@ -15,6 +14,7 @@ import {
   FlaskConical,
   ChevronDown,
   RefreshCw,
+  ExternalLink,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -31,6 +31,7 @@ import {
   extractLabReportsApi,
   type LabCacheEntry,
   type LabPreviewMapped,
+  type LabReportGroupsPayload,
   type PrepareVisitAudioResult,
 } from "@/lib/api";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -42,35 +43,85 @@ interface NewVisitFlowProps {
   patientId: string;
   patientName: string;
   onSave: (visit: Visit) => void | Promise<void>;
-  onSaveFromAudio: (
-    audios: Blob[],
-    labReports?: { blob: Blob; filename: string }[]
-  ) => void | Promise<void>;
   onPrepareVisitFromAudio: (
     audios: Blob[],
-    labReports: { blob: Blob; filename: string }[]
+    labReports: { blob: Blob; filename: string }[],
+    labReportGroups?: LabReportGroupsPayload
   ) => Promise<PrepareVisitAudioResult>;
   onFinalizeVisitFromAudio: (
     audios: Blob[],
     labReports: { blob: Blob; filename: string }[],
-    opts: { transcript: string; labCache: LabCacheEntry[]; labTestNames: string[] }
+    opts: {
+      transcript: string;
+      labCache: LabCacheEntry[];
+      labTestNames: string[];
+      labReportGroups?: LabReportGroupsPayload;
+    }
   ) => void | Promise<void>;
   onCancel: () => void;
 }
 
-type RecordingState = "idle" | "recording" | "paused" | "stopped";
+type RecordingState = "idle" | "recording" | "paused";
 
 type AudioClip = {
   id: string;
   blob: Blob;
   label: string;
   objectUrl: string;
+  /** Filled after “Transcribe audios”; editable. */
+  transcript?: string;
 };
+
+/** Legacy: split old combined transcripts that used `--- Recording N ---` markers (before transcript_segments). */
+function splitRecordingSections(combined: string): string[] {
+  const t = combined.replace(/\r\n/g, "\n").trim();
+  if (!t) return [];
+  const parts = t.split(/\n--- Recording \d+ ---\s*\n/);
+  return parts.map((p, i) => {
+    let s = p;
+    if (i === 0) s = s.replace(/^--- Recording \d+ ---\s*\n?/, "");
+    return s.trim();
+  });
+}
+
+/** Plain combined transcript for UI and API (no `--- Recording N ---` headings). */
+function joinTranscriptSegments(parts: string[]): string {
+  return parts.map((p) => p.trim()).filter(Boolean).join("\n\n");
+}
+
+function openLocalLabBlob(blob: Blob): void {
+  const objectUrl = URL.createObjectURL(blob);
+  window.open(objectUrl, "_blank", "noopener,noreferrer");
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 120_000);
+}
+
+function segmentsForClips(
+  pre: Pick<PrepareVisitAudioResult, "transcript" | "transcriptSegments">,
+  clipCount: number
+): string[] {
+  const segs = pre.transcriptSegments;
+  if (segs.length === clipCount) {
+    return segs.map((s) => (s ?? "").trim());
+  }
+  return splitRecordingSections(pre.transcript);
+}
+
+function buildCombinedTranscriptForFinalize(clips: { transcript?: string }[]): string {
+  return joinTranscriptSegments(clips.map((c) => (c.transcript ?? "").trim()));
+}
+
+function clipsHaveTranscripts(clips: { transcript?: string }[]): boolean {
+  return clips.some((c) => (c.transcript ?? "").trim().length > 0);
+}
+
+type LabPart = { blob: Blob; filename: string };
 
 type LabAttachment = {
   id: string;
   blob: Blob;
   filename: string;
+  /** Multiple photos merged into one extraction (e.g. camera session). */
+  parts?: LabPart[];
   status: "loading" | "done" | "error";
   details?: string;
   extractionMethod?: string;
@@ -101,7 +152,6 @@ export function NewVisitFlow({
   patientId,
   patientName,
   onSave,
-  onSaveFromAudio,
   onPrepareVisitFromAudio,
   onFinalizeVisitFromAudio,
   onCancel,
@@ -109,12 +159,12 @@ export function NewVisitFlow({
   const [clips, setClips] = useState<AudioClip[]>([]);
   const [recordingState, setRecordingState] = useState<RecordingState>("idle");
   const [timer, setTimer] = useState(0);
-  const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
-  const [audioUrl, setAudioUrl] = useState<string>("");
   const [uploadedFileNames, setUploadedFileNames] = useState<string[]>([]);
   const [labFiles, setLabFiles] = useState<LabAttachment[]>([]);
   const [labCameraOpen, setLabCameraOpen] = useState(false);
   const [labCameraStream, setLabCameraStream] = useState<MediaStream | null>(null);
+  /** Photos queued in the camera dialog before "Add to visit" (one logical report). */
+  const [labCameraSessionPhotos, setLabCameraSessionPhotos] = useState<File[]>([]);
   const [transcript, setTranscript] = useState("");
   const [labReviewRows, setLabReviewRows] = useState<LabReviewRow[] | null>(null);
   const [isTranscribing, setIsTranscribing] = useState(false);
@@ -125,26 +175,12 @@ export function NewVisitFlow({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const labInputRef = useRef<HTMLInputElement>(null);
   const labVideoRef = useRef<HTMLVideoElement>(null);
-  const audioRef = useRef<HTMLAudioElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
 
   const revokeClipUrl = useCallback((clip: AudioClip) => {
     URL.revokeObjectURL(clip.objectUrl);
-  }, []);
-
-  const addClipsFromBlobs = useCallback((items: { blob: Blob; label: string }[]) => {
-    setClips((prev) => {
-      const start = prev.length;
-      const added: AudioClip[] = items.map((item, i) => ({
-        id: crypto.randomUUID(),
-        blob: item.blob,
-        label: item.label || `Clip ${start + i + 1}`,
-        objectUrl: URL.createObjectURL(item.blob),
-      }));
-      return [...prev, ...added];
-    });
   }, []);
 
   const removeClip = useCallback(
@@ -174,16 +210,6 @@ export function NewVisitFlow({
   }, [recordingState]);
 
   useEffect(() => {
-    if (!audioBlob) {
-      setAudioUrl("");
-      return;
-    }
-    const url = URL.createObjectURL(audioBlob);
-    setAudioUrl(url);
-    return () => URL.revokeObjectURL(url);
-  }, [audioBlob]);
-
-  useEffect(() => {
     return () => {
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
         mediaRecorderRef.current.stop();
@@ -196,13 +222,6 @@ export function NewVisitFlow({
     const m = Math.floor(s / 60);
     const sec = s % 60;
     return `${m.toString().padStart(2, "0")}:${sec.toString().padStart(2, "0")}`;
-  };
-
-  const clearDraftRecording = () => {
-    setRecordingState("idle");
-    setTimer(0);
-    setAudioBlob(null);
-    setUploadedFileNames([]);
   };
 
   const startRecording = async () => {
@@ -219,14 +238,26 @@ export function NewVisitFlow({
       };
       recorder.onstop = () => {
         const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" });
-        setAudioBlob(blob);
+        setClips((prev) => {
+          const n = prev.length + 1;
+          return [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              blob,
+              label: `Recording ${n}`,
+              objectUrl: URL.createObjectURL(blob),
+            },
+          ];
+        });
         setUploadedFileNames([]);
-        setRecordingState("stopped");
+        setRecordingState("idle");
+        setTimer(0);
         mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
       };
 
       setTimer(0);
-      setAudioBlob(null);
+      setClips((prev) => prev.map((c) => ({ ...c, transcript: undefined })));
       setTranscript("");
       setLabReviewRows(null);
       setRecordingState("recording");
@@ -255,23 +286,6 @@ export function NewVisitFlow({
     }
   };
 
-  const addDraftToClips = () => {
-    if (!audioBlob) return;
-    const n = clips.length + 1;
-    addClipsFromBlobs([{ blob: audioBlob, label: `Recording ${n}` }]);
-    clearDraftRecording();
-  };
-
-  const discardDraft = () => {
-    clearDraftRecording();
-    setTranscript("");
-    setLabReviewRows(null);
-  };
-
-  const appendRecordingToVisit = () => {
-    addDraftToClips();
-  };
-
   const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []).filter((f) => f.type.startsWith("audio/") || /\.(webm|mp3|wav|m4a|ogg|mpeg)$/i.test(f.name));
     if (!files.length) {
@@ -282,7 +296,16 @@ export function NewVisitFlow({
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
       mediaRecorderRef.current.stop();
     }
-    addClipsFromBlobs(files.map((f) => ({ blob: f, label: f.name })));
+    setClips((prev) => {
+      const cleared = prev.map((c) => ({ ...c, transcript: undefined }));
+      const added: AudioClip[] = files.map((f) => ({
+        id: crypto.randomUUID(),
+        blob: f,
+        label: f.name,
+        objectUrl: URL.createObjectURL(f),
+      }));
+      return [...cleared, ...added];
+    });
     setUploadedFileNames(files.map((f) => f.name));
     setTranscript("");
     setLabReviewRows(null);
@@ -290,12 +313,74 @@ export function NewVisitFlow({
   };
 
   const addLabFiles = useCallback(
-    (files: File[]) => {
+    (files: File[], options?: { mergeAsOneReport?: boolean }) => {
       const ok = files.filter(isLabLikeFile);
       if (!ok.length) {
         toast.error("Add image, PDF, text, or Word (.docx) lab files");
         return;
       }
+      const allImages =
+        ok.length > 0 &&
+        ok.every((f) => f.type.startsWith("image/") || /\.(jpe?g|png|webp|gif|bmp|heic)$/i.test(f.name));
+      const merge =
+        Boolean(options?.mergeAsOneReport) && ok.length > 1 && allImages;
+
+      if (merge) {
+        const parts: LabPart[] = ok.map((f, i) => ({
+          blob: f,
+          filename: f.name || `photo-${i + 1}.jpg`,
+        }));
+        const newItem: LabAttachment = {
+          id: crypto.randomUUID(),
+          blob: parts[0].blob,
+          filename: `Lab report (${parts.length} photos)`,
+          parts,
+          status: "loading",
+        };
+        const newIds = new Set([newItem.id]);
+        setLabFiles((prev) => [...prev, newItem]);
+        const labReports = parts.map((p) => ({ blob: p.blob, filename: p.filename }));
+        const labReportGroups: LabReportGroupsPayload = [parts.map((_, i) => i)];
+        void (async () => {
+          try {
+            const { labPreviews } = await extractLabReportsApi({
+              patientId,
+              labReports,
+              labReportGroups,
+            });
+            if (labPreviews.length !== 1) {
+              throw new Error("Unexpected response from lab extraction");
+            }
+            const p = labPreviews[0];
+            setLabFiles((prev) =>
+              prev.map((row) => {
+                if (row.id !== newItem.id) return row;
+                if (p.extractionError) {
+                  return { ...row, status: "error" as const, extractionError: p.extractionError };
+                }
+                return {
+                  ...row,
+                  status: "done" as const,
+                  details: p.details,
+                  extractionMethod: p.extractionMethod,
+                  suggestedTestName: p.suggestedTestName,
+                  needsTestName: p.needsTestName,
+                };
+              })
+            );
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : "Could not analyze lab file";
+            setLabFiles((prev) =>
+              prev.map((row) =>
+                newIds.has(row.id) ? { ...row, status: "error" as const, extractionError: msg } : row
+              )
+            );
+            toast.error(msg);
+          }
+        })();
+        return;
+      }
+
       const newItems: LabAttachment[] = ok.map((f) => ({
         id: crypto.randomUUID(),
         blob: f,
@@ -360,9 +445,17 @@ export function NewVisitFlow({
 
       void (async () => {
         try {
+          const labReports =
+            row.parts?.map((p) => ({ blob: p.blob, filename: p.filename })) ?? [
+              { blob: row.blob, filename: row.filename },
+            ];
+          const labReportGroups: LabReportGroupsPayload | undefined = row.parts?.length
+            ? [row.parts.map((_, i) => i)]
+            : undefined;
           const { labPreviews } = await extractLabReportsApi({
             patientId,
-            labReports: [{ blob: row.blob, filename: row.filename }],
+            labReports,
+            labReportGroups,
           });
           const p = labPreviews[0];
           setLabFiles((prev) =>
@@ -394,6 +487,7 @@ export function NewVisitFlow({
   );
 
   const stopLabCamera = useCallback(() => {
+    setLabCameraSessionPhotos([]);
     setLabCameraStream((prev) => {
       prev?.getTracks().forEach((t) => t.stop());
       return null;
@@ -413,11 +507,13 @@ export function NewVisitFlow({
         video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false,
       });
+      setLabCameraSessionPhotos([]);
       setLabCameraOpen(true);
       setLabCameraStream(stream);
     } catch {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        setLabCameraSessionPhotos([]);
         setLabCameraOpen(true);
         setLabCameraStream(stream);
       } catch {
@@ -487,13 +583,33 @@ export function NewVisitFlow({
           return;
         }
         const name = `lab-photo-${Date.now()}.jpg`;
-        addLabFiles([new File([blob], name, { type: "image/jpeg" })]);
-        stopLabCamera();
+        setLabCameraSessionPhotos((prev) => [...prev, new File([blob], name, { type: "image/jpeg" })]);
       },
       "image/jpeg",
       0.92
     );
-  }, [addLabFiles, stopLabCamera]);
+  }, []);
+
+  const finishCameraSession = useCallback(() => {
+    if (!labCameraSessionPhotos.length) {
+      toast.error("Capture at least one photo");
+      return;
+    }
+    addLabFiles(labCameraSessionPhotos, {
+      mergeAsOneReport: labCameraSessionPhotos.length > 1,
+    });
+    stopLabCamera();
+  }, [labCameraSessionPhotos, addLabFiles, stopLabCamera]);
+
+  const labCameraSessionThumbUrls = useMemo(
+    () => labCameraSessionPhotos.map((f) => URL.createObjectURL(f)),
+    [labCameraSessionPhotos]
+  );
+  useEffect(() => {
+    return () => {
+      labCameraSessionThumbUrls.forEach((u) => URL.revokeObjectURL(u));
+    };
+  }, [labCameraSessionThumbUrls]);
 
   const removeLabFile = useCallback((id: string) => {
     setLabFiles((prev) => prev.filter((x) => x.id !== id));
@@ -519,21 +635,47 @@ export function NewVisitFlow({
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
       mediaRecorderRef.current.stop();
     }
-    addClipsFromBlobs(files.map((f) => ({ blob: f, label: f.name })));
+    setClips((prev) => {
+      const cleared = prev.map((c) => ({ ...c, transcript: undefined }));
+      const added: AudioClip[] = files.map((f) => ({
+        id: crypto.randomUUID(),
+        blob: f,
+        label: f.name,
+        objectUrl: URL.createObjectURL(f),
+      }));
+      return [...cleared, ...added];
+    });
     setUploadedFileNames(files.map((f) => f.name));
     setTranscript("");
     setLabReviewRows(null);
   };
 
-  const blobsToTranscribe = (): Blob[] => {
-    const fromClips = clips.map((c) => c.blob);
-    if (recordingState === "stopped" && audioBlob) {
-      return [...fromClips, audioBlob];
+  const blobsToTranscribe = (): Blob[] => clips.map((c) => c.blob);
+
+  const labBlobsPayload = (): { blob: Blob; filename: string }[] =>
+    labFiles.flatMap((f) =>
+      f.parts?.length
+        ? f.parts.map((p) => ({ blob: p.blob, filename: p.filename }))
+        : [{ blob: f.blob, filename: f.filename }]
+    );
+
+  const labReportGroupsForApi = (): LabReportGroupsPayload | undefined => {
+    let offset = 0;
+    const groups: number[][] = [];
+    for (const f of labFiles) {
+      if (f.parts?.length) {
+        groups.push(f.parts.map((_, i) => offset + i));
+        offset += f.parts.length;
+      } else {
+        groups.push([offset]);
+        offset += 1;
+      }
     }
-    return fromClips;
+    if (groups.every((g) => g.length === 1)) return undefined;
+    return groups;
   };
 
-  const runTranscribeStep = () => {
+  const runTranscribeOnly = () => {
     const blobs = blobsToTranscribe();
     if (!blobs.length) {
       toast.error("Add at least one recording or audio file");
@@ -547,10 +689,16 @@ export function NewVisitFlow({
     setTimeout(() => {
       void (async () => {
         try {
-          if (labFiles.length > 0) {
-            const labs = labFiles.map((f) => ({ blob: f.blob, filename: f.filename }));
-            const pre = await onPrepareVisitFromAudio(blobs, labs);
-            setTranscript(pre.transcript);
+          const pre = await onPrepareVisitFromAudio(blobs, labBlobsPayload(), labReportGroupsForApi());
+          const parts = segmentsForClips(pre, blobs.length);
+          setClips((prev) =>
+            prev.map((c, i) => ({
+              ...c,
+              transcript: parts[i] ?? "",
+            }))
+          );
+          setTranscript(joinTranscriptSegments(parts));
+          if (pre.labPreviews.length > 0) {
             setLabReviewRows(
               pre.labPreviews.map((p) => ({
                 ...p,
@@ -558,7 +706,7 @@ export function NewVisitFlow({
               }))
             );
           } else {
-            await onSaveFromAudio(blobs, undefined);
+            setLabReviewRows(null);
           }
         } catch (err) {
           toast.error(err instanceof Error ? err.message : "Could not transcribe audio");
@@ -569,9 +717,21 @@ export function NewVisitFlow({
     }, 10);
   };
 
-  const backFromLabReview = () => {
-    setLabReviewRows(null);
-    setTranscript("");
+  const finalizeVisitCore = async (blobs: Blob[], rows: LabReviewRow[], transcriptText: string) => {
+    const labs = labBlobsPayload();
+    const labCache: LabCacheEntry[] = rows.map((r) => ({
+      details: r.details,
+      extraction_method: r.extractionMethod,
+      suggested_test_name: r.suggestedTestName,
+      lab_test_pattern: r.labTestPattern ?? "",
+    }));
+    const labTestNames = rows.map((r) => r.testName.trim());
+    await onFinalizeVisitFromAudio(blobs, labs, {
+      transcript: transcriptText,
+      labCache,
+      labTestNames,
+      labReportGroups: labReportGroupsForApi(),
+    });
   };
 
   const finalizeVisitWithLabs = () => {
@@ -589,18 +749,120 @@ export function NewVisitFlow({
     setTimeout(() => {
       void (async () => {
         try {
-          const labs = labFiles.map((f) => ({ blob: f.blob, filename: f.filename }));
-          const labCache: LabCacheEntry[] = labReviewRows.map((r) => ({
-            details: r.details,
-            extraction_method: r.extractionMethod,
-            suggested_test_name: r.suggestedTestName,
-          }));
-          const labTestNames = labReviewRows.map((r) => r.testName.trim());
-          await onFinalizeVisitFromAudio(blobs, labs, {
-            transcript,
-            labCache,
-            labTestNames,
+          await finalizeVisitCore(blobs, labReviewRows, transcript);
+          toast.success("Visit created with structured notes");
+        } catch (err) {
+          toast.error(err instanceof Error ? err.message : "Could not create visit");
+        } finally {
+          setIsFinalizing(false);
+        }
+      })();
+    }, 10);
+  };
+
+  const finalizeAudioOnlyFromServerTranscribe = () => {
+    const blobs = blobsToTranscribe();
+    if (!blobs.length) return;
+    setIsFinalizing(true);
+    setTimeout(() => {
+      void (async () => {
+        try {
+          await onFinalizeVisitFromAudio(blobs, [], {
+            transcript: "",
+            labCache: [],
+            labTestNames: [],
           });
+          toast.success("Visit created with structured notes");
+        } catch (err) {
+          toast.error(err instanceof Error ? err.message : "Could not create visit");
+        } finally {
+          setIsFinalizing(false);
+        }
+      })();
+    }, 10);
+  };
+
+  const finalizeAudioOnlyWithTranscript = () => {
+    const blobs = blobsToTranscribe();
+    if (!blobs.length) return;
+    const combined = buildCombinedTranscriptForFinalize(clipsRef.current);
+    if (!combined.trim()) {
+      toast.error("Transcript is empty");
+      return;
+    }
+    setIsFinalizing(true);
+    setTimeout(() => {
+      void (async () => {
+        try {
+          await onFinalizeVisitFromAudio(blobs, [], {
+            transcript: combined,
+            labCache: [],
+            labTestNames: [],
+          });
+          toast.success("Visit created with structured notes");
+        } catch (err) {
+          toast.error(err instanceof Error ? err.message : "Could not create visit");
+        } finally {
+          setIsFinalizing(false);
+        }
+      })();
+    }, 10);
+  };
+
+  const runGenerateNotes = () => {
+    const blobs = blobsToTranscribe();
+    if (!blobs.length) {
+      toast.error("Add at least one recording or audio file");
+      return;
+    }
+    if (labFiles.length > 0 && labFiles.some((f) => f.status === "loading")) {
+      toast.error("Wait for lab reports to finish analyzing");
+      return;
+    }
+
+    if (labReviewRows !== null) {
+      finalizeVisitWithLabs();
+      return;
+    }
+
+    if (labFiles.length === 0) {
+      if (clipsHaveTranscripts(clipsRef.current)) {
+        finalizeAudioOnlyWithTranscript();
+      } else {
+        finalizeAudioOnlyFromServerTranscribe();
+      }
+      return;
+    }
+
+    setIsFinalizing(true);
+    setTimeout(() => {
+      void (async () => {
+        try {
+          const pre = await onPrepareVisitFromAudio(blobs, labBlobsPayload(), labReportGroupsForApi());
+          const parts = segmentsForClips(pre, blobs.length);
+          setClips((prev) =>
+            prev.map((c, i) => ({
+              ...c,
+              transcript: parts[i] ?? "",
+            }))
+          );
+          const rows: LabReviewRow[] = pre.labPreviews.map((p) => ({
+            ...p,
+            testName: p.suggestedTestName.trim(),
+          }));
+          const plainTranscript = joinTranscriptSegments(parts);
+          setTranscript(plainTranscript);
+          const previewMatchesLabs = rows.length === labFiles.length;
+          const allFilled =
+            previewMatchesLabs && rows.length > 0 && rows.every((r) => r.testName.trim().length > 0);
+          // Only enter review phase when the user must confirm lab names. Setting labReviewRows before finalize
+          // flips inReviewPhase and hides Transcribe + the lab upload card while still loading — confusing.
+          if (!allFilled) {
+            setLabReviewRows(rows);
+            toast.info("Confirm each lab test name, then click Generate notes again.");
+            return;
+          }
+          await finalizeVisitCore(blobs, rows, plainTranscript);
           toast.success("Visit created with structured notes");
         } catch (err) {
           toast.error(err instanceof Error ? err.message : "Could not create visit");
@@ -616,9 +878,11 @@ export function NewVisitFlow({
   const hasAudioToProcess = nPending > 0;
   const recordingBusy = recordingState === "recording" || recordingState === "paused";
   const inLabReview = labReviewRows !== null;
+  const inReviewPhase = inLabReview;
   const labsAnalyzing = labFiles.some((f) => f.status === "loading");
   const allLabNamesFilled =
     labReviewRows !== null && labReviewRows.length > 0 && labReviewRows.every((r) => r.testName.trim().length > 0);
+  const showPreTranscribeActions = hasAudioToProcess && !inLabReview;
 
   return (
     <div className="max-w-3xl mx-auto py-6 px-4 animate-fade-in">
@@ -635,32 +899,61 @@ export function NewVisitFlow({
       <div className="bg-card rounded-2xl border border-border card-shadow p-6 mb-5">
         <h3 className="font-semibold text-sm text-foreground mb-2">Audio clips</h3>
         <p className="text-xs text-muted-foreground mb-4">
-          Record multiple segments and/or upload several files. Order is preserved; all clips are transcribed and combined into one structured note.
+          Each time you stop recording, that clip is added to the list. Order is preserved. Use Transcribe audios to get a
+          transcript under each clip (collapsible); Generate notes combines them into structured notes.
         </p>
 
         {clips.length > 0 && (
-          <ul className="space-y-2 mb-5">
+          <ul className="space-y-3 mb-5">
             {clips.map((c, idx) => (
-              <li
-                key={c.id}
-                className="flex items-center gap-3 bg-accent/30 rounded-xl border border-border px-3 py-2"
-              >
-                <ListMusic className="h-4 w-4 text-muted-foreground shrink-0" />
-                <span className="text-sm text-foreground flex-1 min-w-0 truncate">
-                  {idx + 1}. {c.label}
-                </span>
-                <audio src={c.objectUrl} controls className="h-8 max-w-[200px] sm:max-w-[240px]" />
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="shrink-0 h-8 w-8"
-                  onClick={() => removeClip(c.id)}
-                  aria-label="Remove clip"
-                  disabled={inLabReview}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
+              <li key={c.id} className="rounded-xl border border-border bg-accent/30 overflow-hidden">
+                <div className="flex items-center gap-3 px-3 py-2">
+                  <ListMusic className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <span className="text-sm text-foreground flex-1 min-w-0 truncate">
+                    {idx + 1}. {c.label}
+                  </span>
+                  <audio src={c.objectUrl} controls className="h-8 max-w-[200px] sm:max-w-[240px]" />
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="shrink-0 h-8 w-8"
+                    onClick={() => removeClip(c.id)}
+                    aria-label="Remove clip"
+                    disabled={inReviewPhase}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+                <Collapsible className="group/cliptr border-t border-border/60 bg-accent/20">
+                  <CollapsibleTrigger asChild>
+                    <button
+                      type="button"
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-foreground hover:bg-accent/50"
+                    >
+                      <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200 group-data-[state=open]/cliptr:rotate-180" />
+                      Transcript
+                      <span className="ml-auto text-[10px] font-normal text-muted-foreground">
+                        {(c.transcript ?? "").trim() ? "tap to expand" : "empty — transcribe audios"}
+                      </span>
+                    </button>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <div className="px-3 pb-3">
+                      <textarea
+                        value={c.transcript ?? ""}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setClips((prev) => prev.map((x) => (x.id === c.id ? { ...x, transcript: v } : x)));
+                        }}
+                        placeholder="Transcribe audios to fill this segment, or type here."
+                        rows={5}
+                        disabled={inReviewPhase}
+                        className="w-full text-xs sm:text-sm bg-muted/40 rounded-lg p-3 border border-border text-foreground leading-relaxed resize-y min-h-[100px]"
+                      />
+                    </div>
+                  </CollapsibleContent>
+                </Collapsible>
               </li>
             ))}
           </ul>
@@ -676,14 +969,12 @@ export function NewVisitFlow({
               else if (recordingState === "recording") pauseRecording();
               else if (recordingState === "paused") resumeRecording();
             }}
-            disabled={recordingState === "stopped" || inLabReview}
+            disabled={inReviewPhase}
             className={cn(
               "w-20 h-20 rounded-full flex items-center justify-center transition-all duration-200",
               recordingState === "recording"
                 ? "bg-destructive animate-pulse-recording"
-                : recordingState === "stopped"
-                  ? "bg-muted cursor-not-allowed"
-                  : "bg-primary hover:bg-primary/90 hover:scale-105"
+                : "bg-primary hover:bg-primary/90 hover:scale-105"
             )}
           >
             {recordingState === "recording" ? (
@@ -700,38 +991,19 @@ export function NewVisitFlow({
           )}
 
           <p className="mt-1 text-sm text-muted-foreground text-center px-2">
-            {recordingState === "idle" && "Start a new recording, then add it to the visit. You can record again as many times as you need."}
+            {recordingState === "idle" && "Tap to record. When you stop, the clip is added automatically; you can record again as many times as you need."}
             {recordingState === "recording" && "Recording…"}
             {recordingState === "paused" && "Paused — click to resume"}
-            {recordingState === "stopped" && "Preview below, then add to the visit or discard."}
           </p>
 
           {(recordingState === "recording" || recordingState === "paused") && (
             <div className="flex gap-2 mt-4">
-              <Button variant="destructive" size="sm" type="button" onClick={stopRecording} disabled={inLabReview}>
+              <Button variant="destructive" size="sm" type="button" onClick={stopRecording} disabled={inReviewPhase}>
                 <Square className="h-3.5 w-3.5 mr-1" /> Stop
               </Button>
             </div>
           )}
 
-          {recordingState === "stopped" && audioBlob && (
-            <div className="flex flex-col items-center gap-4 mt-4 w-full max-w-md">
-              <div className="w-full bg-accent/40 rounded-xl p-3 border border-border">
-                <audio ref={audioRef} src={audioUrl || undefined} controls className="w-full" />
-              </div>
-              <div className="flex flex-wrap justify-center gap-2">
-                <Button type="button" size="sm" onClick={appendRecordingToVisit} disabled={inLabReview}>
-                  Add to visit
-                </Button>
-                <Button type="button" variant="outline" size="sm" onClick={discardDraft} disabled={inLabReview}>
-                  <Trash2 className="h-3.5 w-3.5 mr-1" /> Discard
-                </Button>
-                <Button type="button" variant="outline" size="sm" onClick={startRecording} disabled={inLabReview}>
-                  <RotateCcw className="h-3.5 w-3.5 mr-1" /> Re-record
-                </Button>
-              </div>
-            </div>
-          )}
         </div>
 
         <div className="flex items-center gap-3 my-4">
@@ -742,22 +1014,22 @@ export function NewVisitFlow({
 
         <div
           onDragOver={(e) => e.preventDefault()}
-          onDrop={inLabReview ? undefined : handleDrop}
+          onDrop={inReviewPhase ? undefined : handleDrop}
           onClick={() => {
-            if (!inLabReview) fileInputRef.current?.click();
+            if (!inReviewPhase) fileInputRef.current?.click();
           }}
           onKeyDown={(e) => {
-            if (inLabReview) return;
+            if (inReviewPhase) return;
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();
               fileInputRef.current?.click();
             }
           }}
           role="button"
-          tabIndex={inLabReview ? -1 : 0}
+          tabIndex={inReviewPhase ? -1 : 0}
           className={cn(
             "border-2 border-dashed border-border rounded-xl p-6 text-center hover:border-primary/40 transition-colors cursor-pointer",
-            inLabReview && "opacity-60 pointer-events-none"
+            inReviewPhase && "opacity-60 pointer-events-none"
           )}
         >
           <Upload className="h-6 w-6 text-muted-foreground mx-auto mb-2" />
@@ -778,20 +1050,21 @@ export function NewVisitFlow({
         </div>
       </div>
 
-      <div className="bg-card rounded-2xl border border-border card-shadow p-6 mb-5">
-        <h3 className="font-semibold text-sm text-foreground mb-2 flex items-center gap-2">
-          <FlaskConical className="h-4 w-4 text-primary" />
-          Lab reports (optional)
-        </h3>
-        <p className="text-xs text-muted-foreground mb-4">
-          Upload photos or scans, PDFs, text exports, or Word documents. Each file is analyzed as soon as you add it;
-          open a report below to read the extracted text. Images and scanned PDFs use a vision model; text-based files do
-          not. The overall lab test may be classified as one-time vs monitoring when the document supports that. Extractions
-          are used
-          again when you generate structured notes for the visit.
-        </p>
+      {!inReviewPhase && (
+        <div className="bg-card rounded-2xl border border-border card-shadow p-6 mb-5">
+          <h3 className="font-semibold text-sm text-foreground mb-2 flex items-center gap-2">
+            <FlaskConical className="h-4 w-4 text-primary" />
+            Lab reports (optional)
+          </h3>
+          <p className="text-xs text-muted-foreground mb-4">
+            Upload photos or scans, PDFs, text exports, or Word documents. Each file is analyzed as soon as you add it;
+            open a report below to read the extracted text. Images and scanned PDFs use a vision model; text-based files do
+            not. The overall lab test may be classified as one-time vs monitoring when the document supports that. Extractions
+            are used
+            again when you generate structured notes for the visit.
+          </p>
 
-        {labFiles.length > 0 && (
+          {labFiles.length > 0 && (
           <div className="space-y-3 mb-4">
             {labFiles.map((f, idx) => (
               <div
@@ -822,7 +1095,21 @@ export function NewVisitFlow({
                       <p className="text-xs text-destructive mt-1 break-words">{f.extractionError ?? "Extraction failed"}</p>
                     )}
                   </div>
-                  <div className="flex shrink-0 items-center gap-0.5">
+                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-0.5 max-w-[min(100%,14rem)]">
+                    {(f.parts?.length ? f.parts : [{ blob: f.blob, filename: f.filename }]).map((p, pi) => (
+                      <Button
+                        key={pi}
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 gap-1 px-2 text-xs text-primary shrink-0"
+                        onClick={() => openLocalLabBlob(p.blob)}
+                        aria-label={f.parts?.length ? `Open photo ${pi + 1}` : "Open original file"}
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                        {f.parts?.length ? `${pi + 1}` : "Original"}
+                      </Button>
+                    ))}
                     {f.status === "error" && (
                       <Button
                         type="button"
@@ -830,7 +1117,6 @@ export function NewVisitFlow({
                         size="icon"
                         className="h-8 w-8"
                         onClick={() => retryLabExtraction(f.id)}
-                        disabled={inLabReview}
                         aria-label="Retry lab extraction"
                       >
                         <RefreshCw className="h-4 w-4" />
@@ -843,7 +1129,6 @@ export function NewVisitFlow({
                       className="h-8 w-8"
                       onClick={() => removeLabFile(f.id)}
                       aria-label="Remove lab file"
-                      disabled={inLabReview}
                     >
                       <Trash2 className="h-4 w-4" />
                     </Button>
@@ -887,7 +1172,6 @@ export function NewVisitFlow({
             variant="outline"
             size="sm"
             onClick={() => labInputRef.current?.click()}
-            disabled={inLabReview}
           >
             <Upload className="h-3.5 w-3.5 mr-1" /> Upload files
           </Button>
@@ -896,7 +1180,6 @@ export function NewVisitFlow({
             variant="outline"
             size="sm"
             onClick={() => void openLabCamera()}
-            disabled={inLabReview}
           >
             <Camera className="h-3.5 w-3.5 mr-1" /> Take photo
           </Button>
@@ -916,57 +1199,84 @@ export function NewVisitFlow({
             if (!open) stopLabCamera();
           }}
         >
-          <DialogContent className="sm:max-w-lg">
-            <DialogHeader>
+          <DialogContent
+            className={cn(
+              "gap-3 p-3 sm:p-6",
+              "w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] sm:max-w-2xl",
+              "max-h-[min(95dvh,900px)] overflow-y-auto"
+            )}
+          >
+            <DialogHeader className="space-y-1.5 shrink-0">
               <DialogTitle>Capture lab report</DialogTitle>
-              <DialogDescription>
-                Allow camera access, frame the document, then tap Capture. On phones this uses the rear camera when
-                available.
+              <DialogDescription className="text-xs sm:text-sm">
+                Capture each page or section of the report. Add multiple photos for one report, then tap “Add to visit”.
+                On phones this uses the rear camera when available.
               </DialogDescription>
             </DialogHeader>
-            <video
-              key={labCameraStream?.id ?? "preview"}
-              ref={labVideoRef}
-              playsInline
-              muted
-              className="w-full min-h-[200px] rounded-lg bg-black aspect-video object-contain max-h-[60vh] [transform:scaleX(-1)]"
-              onLoadedMetadata={(e) => {
-                void e.currentTarget.play().catch(() => {});
-              }}
-              onCanPlay={(e) => {
-                void e.currentTarget.play().catch(() => {});
-              }}
-            />
-            <DialogFooter className="gap-2 sm:gap-0">
+            {/* Tall area on mobile: aspect-video on a narrow column was ~200px tall; use dvh so preview is usable */}
+            <div className="relative w-full h-[min(62dvh,560px)] sm:h-[min(420px,50dvh)] max-h-[min(72dvh,640px)] min-h-[280px] overflow-hidden rounded-lg bg-black">
+              <video
+                key={labCameraStream?.id ?? "preview"}
+                ref={labVideoRef}
+                playsInline
+                muted
+                className="absolute inset-0 h-full w-full object-contain [transform:scaleX(-1)]"
+                onLoadedMetadata={(e) => {
+                  void e.currentTarget.play().catch(() => {});
+                }}
+                onCanPlay={(e) => {
+                  void e.currentTarget.play().catch(() => {});
+                }}
+              />
+            </div>
+            {labCameraSessionPhotos.length > 0 ? (
+              <div className="flex gap-2 overflow-x-auto pb-1 shrink-0">
+                {labCameraSessionThumbUrls.map((url, i) => (
+                  <div
+                    key={`${url}-${i}`}
+                    className="h-16 w-12 shrink-0 rounded-md border border-border overflow-hidden bg-muted"
+                  >
+                    <img src={url} alt="" className="h-full w-full object-cover" />
+                  </div>
+                ))}
+                <p className="text-xs text-muted-foreground self-center min-w-[8rem]">
+                  {labCameraSessionPhotos.length} photo
+                  {labCameraSessionPhotos.length !== 1 ? "s" : ""} — add more or finish.
+                </p>
+              </div>
+            ) : null}
+            <DialogFooter className="flex-col gap-2 sm:flex-row sm:justify-end shrink-0">
               <Button type="button" variant="outline" onClick={stopLabCamera}>
                 Cancel
               </Button>
-              <Button type="button" onClick={captureLabPhoto}>
-                Capture
+              <Button type="button" variant="secondary" onClick={captureLabPhoto}>
+                Add photo
+              </Button>
+              <Button
+                type="button"
+                onClick={finishCameraSession}
+                disabled={labCameraSessionPhotos.length === 0}
+              >
+                {labCameraSessionPhotos.length > 1
+                  ? `Add ${labCameraSessionPhotos.length} photos to visit`
+                  : "Add to visit"}
               </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
 
-        <div
-          onDragOver={(e) => !inLabReview && e.preventDefault()}
-          onDrop={inLabReview ? undefined : handleLabDrop}
-          className={cn(
-            "mt-4 border border-dashed border-border rounded-xl p-4 text-center text-xs text-muted-foreground",
-            inLabReview && "opacity-60 pointer-events-none"
-          )}
-        >
-          Or drag lab files here (images, PDF, .txt, .csv, .docx)
+          <div
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={handleLabDrop}
+            className="mt-4 border border-dashed border-border rounded-xl p-4 text-center text-xs text-muted-foreground"
+          >
+            Or drag lab files here (images, PDF, .txt, .csv, .docx)
+          </div>
         </div>
-      </div>
+      )}
 
-      {hasAudioToProcess && labReviewRows === null && (
-        <div className="flex flex-col items-center gap-2 mb-5">
-          {recordingState === "stopped" && audioBlob && (
-            <p className="text-xs text-muted-foreground text-center">
-              Current preview will be included when you transcribe ({nPending} clip{nPending !== 1 ? "s" : ""} total).
-            </p>
-          )}
+      {showPreTranscribeActions && (
+        <div className="flex flex-col items-center gap-3 mb-5">
           {nLab > 0 && labsAnalyzing && (
             <p className="text-xs text-amber-800 dark:text-amber-200 text-center">
               Finishing lab report analysis…
@@ -974,28 +1284,49 @@ export function NewVisitFlow({
           )}
           {nLab > 0 && !labsAnalyzing && (
             <p className="text-xs text-muted-foreground text-center">
-              {nLab} lab file{nLab !== 1 ? "s" : ""} will be combined with audio next; you can confirm each lab test name
-              before notes are generated.
+              {nLab} lab file{nLab !== 1 ? "s" : ""} — use Transcribe audios to preview transcript and lab text, or Generate
+              notes to create the visit in one step (you can confirm lab test names if needed).
             </p>
           )}
-          <Button
-            type="button"
-            onClick={runTranscribeStep}
-            disabled={isTranscribing || recordingBusy || (nLab > 0 && labsAnalyzing)}
-          >
-            {isTranscribing ? (
-              <>
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                {nLab > 0
-                  ? `Processing ${nPending} audio + ${nLab} lab…`
-                  : `Processing ${nPending} audio…`}
-              </>
-            ) : nLab > 0 ? (
-              `Transcribe & extract labs (${nPending} audio, ${nLab} lab)`
-            ) : (
-              `Transcribe & generate notes (${nPending} audio)`
-            )}
-          </Button>
+          {nLab === 0 && (
+            <p className="text-xs text-muted-foreground text-center max-w-md">
+              Transcribe audios to preview and edit the transcript first, or Generate notes to transcribe and create the
+              visit in one step.
+            </p>
+          )}
+          <div className="flex flex-col sm:flex-row flex-wrap items-stretch sm:items-center justify-center gap-2 w-full max-w-md">
+            <Button
+              type="button"
+              variant="outline"
+              className="sm:flex-1"
+              onClick={runTranscribeOnly}
+              disabled={isTranscribing || isFinalizing || recordingBusy || (nLab > 0 && labsAnalyzing)}
+            >
+              {isTranscribing ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  {nLab > 0 ? `Transcribing ${nPending} audio + labs…` : `Transcribing ${nPending} audio…`}
+                </>
+              ) : (
+                "Transcribe audios"
+              )}
+            </Button>
+            <Button
+              type="button"
+              className="sm:flex-1"
+              onClick={runGenerateNotes}
+              disabled={isTranscribing || isFinalizing || recordingBusy || (nLab > 0 && labsAnalyzing)}
+            >
+              {isFinalizing ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Generating notes…
+                </>
+              ) : (
+                "Generate notes"
+              )}
+            </Button>
+          </div>
         </div>
       )}
 
@@ -1054,6 +1385,24 @@ export function NewVisitFlow({
                     <p className="text-xs text-muted-foreground truncate" title={row.filename}>
                       File: {row.filename}
                     </p>
+                    {labFiles[idx] ? (
+                      <div className="mt-1 flex flex-wrap gap-2">
+                        {(labFiles[idx].parts?.length
+                          ? labFiles[idx].parts!
+                          : [{ blob: labFiles[idx].blob, filename: labFiles[idx].filename }]
+                        ).map((p, pi) => (
+                          <button
+                            key={pi}
+                            type="button"
+                            className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                            onClick={() => openLocalLabBlob(p.blob)}
+                          >
+                            <ExternalLink className="h-3 w-3 shrink-0" />
+                            {labFiles[idx].parts?.length ? `Photo ${pi + 1}` : "Open original file"}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
                   <Collapsible className="group border border-border rounded-lg bg-background/80">
                     <CollapsibleTrigger asChild>
@@ -1084,20 +1433,13 @@ export function NewVisitFlow({
           </div>
 
           <div className="flex flex-col sm:flex-row flex-wrap items-stretch sm:items-center justify-center gap-2">
-            <Button type="button" variant="outline" onClick={backFromLabReview} disabled={isFinalizing}>
-              Back to edit attachments
-            </Button>
-            <Button
-              type="button"
-              onClick={finalizeVisitWithLabs}
-              disabled={isFinalizing || !allLabNamesFilled}
-            >
+            <Button type="button" onClick={runGenerateNotes} disabled={isFinalizing || !allLabNamesFilled}>
               {isFinalizing ? (
                 <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Generating structured notes…
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" /> Generating notes…
                 </>
               ) : (
-                "Generate structured notes"
+                "Generate notes"
               )}
             </Button>
           </div>

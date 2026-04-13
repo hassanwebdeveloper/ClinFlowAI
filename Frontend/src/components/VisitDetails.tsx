@@ -1,16 +1,33 @@
-import { useCallback, useEffect, useState } from "react";
-import type { Visit } from "@/hooks/usePatientStore";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import type { Visit, LabReportRecord } from "@/hooks/usePatientStore";
 import type { ApiAiSuggestion, VisitPatchPayload } from "@/lib/api";
-import { fetchAiSuggestionsApi } from "@/lib/api";
-import { FileText, Pill, Pencil, Mic, Sparkles, Loader2, Lightbulb, RefreshCw, ExternalLink } from "lucide-react";
+import { fetchAiSuggestionsApi, openStoredLabFileInNewTab } from "@/lib/api";
+import type { LucideIcon } from "lucide-react";
+import {
+  FileText,
+  Pill,
+  Pencil,
+  Mic,
+  Sparkles,
+  Loader2,
+  Lightbulb,
+  RefreshCw,
+  ExternalLink,
+  FlaskConical,
+  ChevronDown,
+  ClipboardList,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { toast } from "sonner";
 
 interface VisitDetailsProps {
   visit: Visit;
+  /** Lab files saved for this visit (same collapsible style as new visit). */
+  visitLabReports: LabReportRecord[];
   patientId: string;
   onUpdateSoap: (soap: Visit["soap"]) => Promise<void>;
   onSaveVisit: (patch: VisitPatchPayload) => Promise<void>;
@@ -47,8 +64,75 @@ function ReadonlyBlock({ text, emptyLabel }: { text: string; emptyLabel?: string
   );
 }
 
+function ReadonlyLineList({ linesText, emptyLabel }: { linesText: string; emptyLabel: string }) {
+  const items = linesText
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!items.length) {
+    return (
+      <p className="text-sm text-muted-foreground italic rounded-lg bg-muted/30 border border-border/60 px-3 py-2 min-h-[2.5rem]">
+        {emptyLabel}
+      </p>
+    );
+  }
+  return (
+    <ul className="text-sm text-foreground/80 list-disc pl-5 space-y-1 rounded-lg bg-muted/30 border border-border/60 px-3 py-2 min-h-[2.5rem]">
+      {items.map((item, i) => (
+        <li key={i}>{item}</li>
+      ))}
+    </ul>
+  );
+}
+
+function VisitSectionCollapsible({
+  title,
+  icon: Icon,
+  iconClassName = "text-primary",
+  defaultOpen = true,
+  headerRight,
+  badge,
+  children,
+}: {
+  title: string;
+  icon: LucideIcon;
+  iconClassName?: string;
+  defaultOpen?: boolean;
+  headerRight?: ReactNode;
+  badge?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <Collapsible
+      defaultOpen={defaultOpen}
+      className="group/vsection bg-card rounded-2xl border border-border card-shadow overflow-hidden"
+    >
+      <div className="flex flex-wrap items-start gap-x-2 gap-y-2 p-5 pb-3">
+        <CollapsibleTrigger asChild>
+          <button
+            type="button"
+            className="flex flex-1 min-w-[12rem] items-center gap-2 text-left rounded-xl -m-1 p-2 hover:bg-accent/30 transition-colors"
+          >
+            <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 group-data-[state=open]/vsection:rotate-180" />
+            <Icon className={cn("h-4 w-4 shrink-0", iconClassName)} />
+            <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0">
+              <h3 className="font-semibold text-foreground text-sm">{title}</h3>
+              {badge}
+            </span>
+          </button>
+        </CollapsibleTrigger>
+        {headerRight ? <div className="ml-auto shrink-0">{headerRight}</div> : null}
+      </div>
+      <CollapsibleContent>
+        <div className="px-5 pb-5 pt-1 border-t border-border/50">{children}</div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
 export function VisitDetails({
   visit,
+  visitLabReports,
   patientId,
   onUpdateSoap,
   onSaveVisit,
@@ -76,6 +160,13 @@ export function VisitDetails({
 
   const [suggestions, setSuggestions] = useState<ApiAiSuggestion[]>([]);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+
+  /** Last transcript value we treat as “already regenerated” / initial for this visit. */
+  const regenerateBaselineTranscriptRef = useRef(visit.transcript ?? "");
+
+  useEffect(() => {
+    regenerateBaselineTranscriptRef.current = visit.transcript ?? "";
+  }, [visit.id]);
 
   const fetchSuggestions = useCallback(async () => {
     if (!patientId || !visit.id) return;
@@ -123,9 +214,24 @@ export function VisitDetails({
     JSON.stringify(visit.prescribedLabTests),
   ]);
 
+  const savedTranscript = visit.transcript ?? "";
+  const hasUnsavedTranscript = transcript !== savedTranscript;
+  const transcriptSavedAndChangedFromBaseline =
+    !hasUnsavedTranscript && savedTranscript !== regenerateBaselineTranscriptRef.current;
+  const canRegenerateStructuredNotes =
+    Boolean(transcript.trim()) && transcriptSavedAndChangedFromBaseline;
+
   const handleRegenerate = async () => {
     if (!transcript.trim()) {
       toast.error("Add a transcript before regenerating");
+      return;
+    }
+    if (hasUnsavedTranscript) {
+      toast.error("Save the transcript first (Save on the Transcript field)");
+      return;
+    }
+    if (!transcriptSavedAndChangedFromBaseline) {
+      toast.error("Save a transcript change first; it must differ from the last saved version before regenerating");
       return;
     }
     setRegenerating(true);
@@ -144,6 +250,7 @@ export function VisitDetails({
         prescribed_lab_tests: linesToList(labTestsText),
       });
       await onRegenerateSoap(transcript);
+      regenerateBaselineTranscriptRef.current = transcript;
       toast.success("Saved and regenerated structured notes");
       fetchSuggestions();
     } catch (e) {
@@ -241,12 +348,7 @@ export function VisitDetails({
 
   return (
     <div className="space-y-4 animate-fade-in">
-      {/* 1. SOAP Notes */}
-      <div className="bg-card rounded-2xl border border-border card-shadow p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <FileText className="h-4 w-4 text-primary" />
-          <h3 className="font-semibold text-foreground text-sm">SOAP Notes</h3>
-        </div>
+      <VisitSectionCollapsible title="SOAP Notes" icon={FileText}>
         <div className="space-y-4">
           {soapLabels.map(({ key, label, color }) => (
             <div key={key}>
@@ -277,21 +379,105 @@ export function VisitDetails({
             </div>
           ))}
         </div>
-      </div>
+      </VisitSectionCollapsible>
 
-      {/* 2. AI Suggestions */}
-      <div className="bg-card rounded-2xl border border-border card-shadow p-5">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <Lightbulb className="h-4 w-4 text-amber-500" />
-            <h3 className="font-semibold text-foreground text-sm">AI Suggestions</h3>
+      {visitLabReports.length > 0 && (
+        <VisitSectionCollapsible
+          title="Lab reports"
+          icon={FlaskConical}
+          badge={
+            <span className="text-xs text-muted-foreground font-normal">({visitLabReports.length})</span>
+          }
+        >
+          <p className="text-xs text-muted-foreground mb-4">
+            Files uploaded for this visit. Open a report to view extracted text.
+          </p>
+          <div className="space-y-3">
+            {visitLabReports.map((lr, idx) => (
+              <Collapsible
+                key={lr.id || `${lr.filename}-${idx}`}
+                className="group/labrow rounded-xl border border-border bg-accent/20 overflow-hidden"
+              >
+                <CollapsibleTrigger asChild>
+                  <button
+                    type="button"
+                    className="flex w-full items-start gap-2 px-3 py-2.5 text-left border-b border-border/80 bg-accent/30 hover:bg-accent/40 transition-colors"
+                  >
+                    <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground mt-0.5 transition-transform duration-200 group-data-[state=open]/labrow:rotate-180" />
+                    <FileText className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-foreground truncate" title={lr.filename}>
+                        {idx + 1}. {lr.testName?.trim() ? lr.testName : lr.filename}
+                      </p>
+                      {lr.testName?.trim() && (
+                        <p className="text-xs text-muted-foreground truncate mt-0.5" title={lr.filename}>
+                          {lr.filename}
+                        </p>
+                      )}
+                      <p className="text-[10px] uppercase text-muted-foreground mt-1">
+                        {lr.extractionMethod === "vl" ? "vision" : "text"}
+                      </p>
+                    </div>
+                  </button>
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <div className="px-3 py-3 space-y-3 border-t border-border/60 bg-accent/10">
+                    {(() => {
+                      const urls = [lr.fileUrl, ...(lr.extraFileUrls ?? [])].filter((u): u is string =>
+                        Boolean(u?.trim())
+                      );
+                      if (!urls.length) return null;
+                      return (
+                        <div className="flex flex-wrap gap-2">
+                          {urls.map((u, i) => (
+                            <button
+                              key={`${u}-${i}`}
+                              type="button"
+                              onClick={() => {
+                                void openStoredLabFileInNewTab(u).catch((e) =>
+                                  toast.error(e instanceof Error ? e.message : "Could not open file")
+                                );
+                              }}
+                              className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" />
+                              {urls.length > 1 ? `Open photo ${i + 1}` : "Open uploaded file"}
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                    {lr.details?.trim() ? (
+                      <textarea
+                        readOnly
+                        value={lr.details}
+                        className="w-full min-h-[140px] max-h-[320px] text-xs font-mono bg-muted/40 rounded-lg p-3 border border-border text-foreground leading-relaxed resize-y"
+                      />
+                    ) : (
+                      <p className="text-xs text-muted-foreground">No extracted text stored.</p>
+                    )}
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+            ))}
           </div>
+        </VisitSectionCollapsible>
+      )}
+
+      <VisitSectionCollapsible
+        title="AI Suggestions"
+        icon={Lightbulb}
+        iconClassName="text-amber-500"
+        headerRight={
           <Button
             type="button"
             size="sm"
             variant="outline"
             disabled={loadingSuggestions || !(visit.transcript?.trim())}
-            onClick={fetchSuggestions}
+            onClick={(e) => {
+              e.stopPropagation();
+              void fetchSuggestions();
+            }}
           >
             {loadingSuggestions ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
@@ -300,8 +486,8 @@ export function VisitDetails({
             )}
             {loadingSuggestions ? "Analysing..." : "Refresh Suggestions"}
           </Button>
-        </div>
-
+        }
+      >
         {loadingSuggestions && suggestions.length === 0 && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground py-6 justify-center">
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -346,13 +532,15 @@ export function VisitDetails({
             ))}
           </div>
         )}
-      </div>
+      </VisitSectionCollapsible>
 
-      {/* 3. Additional information */}
-      <div className="bg-card rounded-2xl border border-border card-shadow p-5">
-        <h3 className="font-semibold text-foreground text-sm mb-1">Additional information</h3>
+      <VisitSectionCollapsible title="Additional information" icon={ClipboardList}>
         <p className="text-xs text-muted-foreground mb-4">
-          Symptoms, duration, relevant history, allergies, prescribed medicines, and lab tests from the transcript.
+          Symptoms, duration, relevant history, and allergies from the transcript.{" "}
+          <span className="font-medium text-foreground/80">
+            Prescribed medicines and ordered labs or imaging are extracted from the doctor&apos;s speech only
+          </span>{" "}
+          (not from uploaded lab result documents).
         </p>
         <div className="space-y-4">
           <div>
@@ -468,7 +656,7 @@ export function VisitDetails({
 
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <Label className="text-xs">Prescribed medicines</Label>
+              <Label className="text-xs">Prescribed medicines (from transcript)</Label>
               {!editingExtra.medicines && penBtn(() => setEditingExtra((p) => ({ ...p, medicines: true })))}
             </div>
             {editingExtra.medicines ? (
@@ -490,13 +678,13 @@ export function VisitDetails({
                 </div>
               </div>
             ) : (
-              <ReadonlyBlock text={medicinesText} emptyLabel="None extracted" />
+              <ReadonlyLineList linesText={medicinesText} emptyLabel="None mentioned in transcript" />
             )}
           </div>
 
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <Label className="text-xs">Lab tests and investigations</Label>
+              <Label className="text-xs">Ordered labs &amp; imaging (from transcript)</Label>
               {!editingExtra.labTests && penBtn(() => setEditingExtra((p) => ({ ...p, labTests: true })))}
             </div>
             {editingExtra.labTests ? (
@@ -518,19 +706,13 @@ export function VisitDetails({
                 </div>
               </div>
             ) : (
-              <ReadonlyBlock text={labTestsText} emptyLabel="None extracted" />
+              <ReadonlyLineList linesText={labTestsText} emptyLabel="None ordered in transcript" />
             )}
           </div>
         </div>
-      </div>
+      </VisitSectionCollapsible>
 
-      {/* 4. Visit summary */}
-      <div className="bg-card rounded-2xl border border-border card-shadow p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <Mic className="h-4 w-4 text-primary" />
-          <h3 className="font-semibold text-foreground text-sm">Visit summary</h3>
-        </div>
-
+      <VisitSectionCollapsible title="Visit summary" icon={Mic}>
         <div className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
@@ -658,22 +840,15 @@ export function VisitDetails({
               <ReadonlyBlock text={transcript} emptyLabel="No transcript" />
             )}
           </div>
-
-          {visit.labReportDetails?.trim() ? (
-            <div className="mt-6">
-              <Label className="text-xs">Lab / document extraction (used for structured notes)</Label>
-              <p className="text-xs text-muted-foreground mb-1.5 mt-1">
-                From uploads during visit creation; included again when you regenerate notes from the transcript. The
-                overall ordered lab test may be tagged [one-time] or [monitoring] when the source document supported that
-                inference (whole test, not each result line).
-              </p>
-              <ReadonlyBlock text={visit.labReportDetails} emptyLabel="No lab data" />
-            </div>
-          ) : null}
         </div>
 
         <div className="mt-4 pt-4 border-t border-border">
-          <Button type="button" size="sm" disabled={regenerating || !transcript.trim()} onClick={handleRegenerate}>
+          <Button
+            type="button"
+            size="sm"
+            disabled={regenerating || !canRegenerateStructuredNotes}
+            onClick={handleRegenerate}
+          >
             {regenerating ? (
               <Loader2 className="h-4 w-4 animate-spin mr-1" />
             ) : (
@@ -682,12 +857,13 @@ export function VisitDetails({
             Regenerate structured notes
           </Button>
           <p className="text-xs text-muted-foreground mt-2">
-            Saves transcript, date, visit title, summary report, and additional fields, then regenerates SOAP,
-            visit title, summary report, medicines, lab tests, and other structured extraction from the transcript
+            Save the transcript when you change it (Save on Transcript). The button turns on only after a saved
+            transcript that differs from the previous saved one for this visit. Then this saves all visit summary
+            fields and regenerates SOAP, title, summary, medicines, labs, and related extraction
             {visit.labReportDetails?.trim() ? " (lab document text for this visit is included automatically)." : "."}
           </p>
         </div>
-      </div>
+      </VisitSectionCollapsible>
 
       {visit.prescriptions.length > 0 && (
         <div className="bg-card rounded-2xl border border-border card-shadow p-5">

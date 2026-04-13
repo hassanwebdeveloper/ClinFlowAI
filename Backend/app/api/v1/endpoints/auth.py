@@ -21,6 +21,12 @@ def _doctor_response(doc: dict) -> DoctorResponse:
         id=str(doc["_id"]),
         email=doc["email"],
         name=doc["name"],
+        country=doc.get("country"),
+        city=doc.get("city"),
+        specialty=doc.get("specialty"),
+        years_of_experience=doc.get("years_of_experience"),
+        practice_name=doc.get("practice_name"),
+        license_number=doc.get("license_number"),
     )
 
 
@@ -39,6 +45,12 @@ async def signup(body: DoctorSignup, db: AsyncIOMotorDatabase = Depends(get_db))
         "name": body.name.strip(),
         "password_hash": hash_password(body.password),
         "created_at": now,
+        "country": body.country.strip(),
+        "city": body.city.strip(),
+        "specialty": body.specialty.strip(),
+        "years_of_experience": body.years_of_experience,
+        "practice_name": (body.practice_name or "").strip() or None,
+        "license_number": (body.license_number or "").strip() or None,
     }
     result = await col.insert_one(doc)
     doc["_id"] = result.inserted_id

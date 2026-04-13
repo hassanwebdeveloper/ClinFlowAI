@@ -1,13 +1,14 @@
+import { Link } from "react-router-dom";
 import { CalendarDays } from "lucide-react";
 import type { Patient } from "@/hooks/usePatientStore";
 import { visitListLabel } from "@/lib/api";
+import { patientVisitPath } from "@/lib/routes";
 
 interface VisitsViewProps {
   patients: Patient[];
-  onSelectPatient: (id: string) => void;
 }
 
-export function VisitsView({ patients, onSelectPatient }: VisitsViewProps) {
+export function VisitsView({ patients }: VisitsViewProps) {
   const allVisits = patients
     .flatMap((p) => p.visits.map((v) => ({ ...v, patientName: p.name, patientId: p.id })))
     .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
@@ -17,10 +18,10 @@ export function VisitsView({ patients, onSelectPatient }: VisitsViewProps) {
       <h2 className="text-lg font-semibold text-foreground mb-5">Recent Visits</h2>
       <div className="space-y-2">
         {allVisits.map((visit) => (
-          <button
-            key={visit.id}
-            onClick={() => onSelectPatient(visit.patientId)}
-            className="w-full text-left bg-card rounded-2xl border border-border card-shadow p-4 hover:card-shadow-hover transition-all duration-150"
+          <Link
+            key={`${visit.patientId}-${visit.id}`}
+            to={patientVisitPath(visit.patientId, visit.id)}
+            className="block w-full text-left bg-card rounded-2xl border border-border card-shadow p-4 hover:card-shadow-hover transition-all duration-150"
           >
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
@@ -39,7 +40,7 @@ export function VisitsView({ patients, onSelectPatient }: VisitsViewProps) {
                 })}
               </span>
             </div>
-          </button>
+          </Link>
         ))}
       </div>
     </div>

@@ -8,8 +8,12 @@ class LabReportRecord(BaseModel):
     extraction_method: str = ""
     details: str = ""
     test_name: str = ""  # overall ordered lab test (e.g. CBC), not each result line
+    lab_test_pattern: str = ""  # e.g. [one-time] / [monitoring]; stored only, not shown in UI
     visit_id: str = ""
+    file_id: str | None = None
     file_url: str | None = None
+    extra_file_ids: list[str] = Field(default_factory=list)
+    extra_file_urls: list[str] = Field(default_factory=list)
 
 
 class LabPreviewItem(BaseModel):
@@ -18,6 +22,7 @@ class LabPreviewItem(BaseModel):
     details: str
     suggested_test_name: str = ""  # overall lab test / order name from the report heading
     needs_test_name: bool = True  # true when the model could not read that name from the document
+    lab_test_pattern: str = ""  # stored for DB / cache; do not display in UI
     extraction_error: str | None = None  # set when this file failed to extract (upload-time preview only)
 
 
@@ -28,6 +33,10 @@ class ExtractLabReportsResponse(BaseModel):
 class PrepareVisitAudioResponse(BaseModel):
     transcript: str
     lab_previews: list[LabPreviewItem] = Field(default_factory=list)
+    transcript_segments: list[str] = Field(
+        default_factory=list,
+        description="One segment per audio file in order; plain text, no recording headers.",
+    )
 
 
 class SoapBlock(BaseModel):
@@ -61,9 +70,12 @@ class VisitIn(BaseModel):
     soap: SoapBlock
     prescriptions: list[Prescription] = Field(default_factory=list)
     lab_report_details: str = ""
+    # Populated on read from patient-level lab_reports by visit_id; not stored on visit subdocuments.
+    lab_reports: list[LabReportRecord] = Field(default_factory=list)
 
 
 class PatientCreate(BaseModel):
+    clinic_id: str = Field(..., min_length=1)
     ui_id: str = Field(..., min_length=1, max_length=128)
     name: str = Field(..., min_length=1, max_length=200)
     age: int = Field(ge=0, le=150)

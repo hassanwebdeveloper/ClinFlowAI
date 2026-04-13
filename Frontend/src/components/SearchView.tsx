@@ -1,20 +1,26 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { Search as SearchIcon, User, CalendarDays } from "lucide-react";
 import type { Patient } from "@/hooks/usePatientStore";
-import { cn } from "@/lib/utils";
 import { visitListLabel } from "@/lib/api";
+import { patientPath, patientVisitPath } from "@/lib/routes";
 
 interface SearchViewProps {
   patients: Patient[];
-  onSelectPatient: (id: string) => void;
 }
 
-export function SearchView({ patients, onSelectPatient }: SearchViewProps) {
+export function SearchView({ patients }: SearchViewProps) {
   const [query, setQuery] = useState("");
 
   const results = query.trim()
     ? patients.flatMap((p) => {
-        const items: { type: "patient" | "visit"; patient: Patient; label: string; sub: string }[] = [];
+        const items: {
+          type: "patient" | "visit";
+          patient: Patient;
+          visitId?: string;
+          label: string;
+          sub: string;
+        }[] = [];
         const q = query.toLowerCase();
         if (
           p.name.toLowerCase().includes(q) ||
@@ -34,7 +40,13 @@ export function SearchView({ patients, onSelectPatient }: SearchViewProps) {
             v.diagnosis.toLowerCase().includes(q) ||
             (v.visitTitle && v.visitTitle.toLowerCase().includes(q))
           ) {
-            items.push({ type: "visit", patient: p, label, sub: `${p.name} · ${v.date}` });
+            items.push({
+              type: "visit",
+              patient: p,
+              visitId: v.id,
+              label,
+              sub: `${p.name} · ${v.date}`,
+            });
           }
         });
         return items;
@@ -61,10 +73,15 @@ export function SearchView({ patients, onSelectPatient }: SearchViewProps) {
           {results.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-8">No results found</p>
           ) : (
-            results.map((r, i) => (
-              <button
+            results.map((r, i) => {
+              const to =
+                r.type === "visit" && r.visitId
+                  ? patientVisitPath(r.patient.id, r.visitId)
+                  : patientPath(r.patient.id);
+              return (
+              <Link
                 key={i}
-                onClick={() => onSelectPatient(r.patient.id)}
+                to={to}
                 className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-accent transition-colors text-left"
               >
                 {r.type === "patient" ? (
@@ -76,8 +93,9 @@ export function SearchView({ patients, onSelectPatient }: SearchViewProps) {
                   <p className="text-sm font-medium text-foreground">{r.label}</p>
                   <p className="text-xs text-muted-foreground">{r.sub}</p>
                 </div>
-              </button>
-            ))
+              </Link>
+            );
+            })
           )}
         </div>
       )}

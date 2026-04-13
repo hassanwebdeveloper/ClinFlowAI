@@ -248,7 +248,7 @@ IMPORTANT RULES:
 
     user = f"""Convert the following doctor summary into a structured clinical note.
 
-The summary may come from multiple sequential recordings of the same visit, separated by lines like "--- Recording N ---". Treat them as one continuous encounter and produce a single unified note (do not duplicate or contradict; merge related information).
+The summary may combine multiple sequential audio clips from the same visit (joined with blank lines). Treat them as one continuous encounter and produce a single unified note (do not duplicate or contradict; merge related information).
 
 -----------------------------------
 DOCTOR SUMMARY:
@@ -258,7 +258,9 @@ DOCTOR SUMMARY:
 LAB / INVESTIGATION DATA (from uploaded lab documents for this visit; may be empty):
 {(lab_report_context or "").strip() or "(No lab documents provided)"}
 
-Each extracted lab line may end with a tag: [one-time] (single/episodic test), [monitoring] (repeating/serial/surveillance), or [unclear — insufficient context]. Preserve that distinction in Objective when summarizing labs; in Plan, reflect ongoing monitoring only when supported by [monitoring] tags or the doctor summary.
+These are **results / documents**, not necessarily what the doctor ordered in speech. The doctor's spoken orders for new labs or imaging belong in prescribed_lab_tests (from transcript only).
+
+If the extracted document metadata includes a **whole-test** pattern [one-time] vs [monitoring] vs [unclear — insufficient context] for that uploaded order, you may use it when summarizing those lab results in Objective and Plan (e.g. surveillance vs one-off). Do not invent a pattern if it is not evident from the excerpt.
 
 - Patient information: 
     name: {patient_info.get("name", "")}
@@ -271,8 +273,8 @@ Extract the following information from the doctor summary:
 - Duration
 - Relevant history
 - Allergies
-- Medicines explicitly prescribed or ordered by the doctor in this visit (drug names only or short phrases; empty if none mentioned)
-- Lab tests, imaging, or investigations explicitly ordered or requested (e.g. CBC, X-ray, HbA1c); empty if none mentioned
+- Medicines explicitly prescribed or ordered by the doctor **in the DOCTOR SUMMARY / transcript only** (drug names or short phrases; empty if none stated in speech). Do NOT fill this from uploaded lab documents, past history, or inferred from lab results unless the doctor clearly states a prescription in the summary.
+- Lab tests, imaging, or investigations the doctor **orders or requests in the DOCTOR SUMMARY / transcript** (e.g. "order CBC", "send for X-ray"); empty if none stated in speech. Do NOT list tests that appear only as **results** on uploaded lab reports unless the doctor also orders them in the summary.
 
 Also write the SOAP note from the doctor summary AND the lab / investigation data above.
 
@@ -317,8 +319,8 @@ JSON format:
 
 - visit_title: Short title for the visit list (e.g. "Presenting with fever and chills"). No patient name required.
 - visit_summary_report: 1-3 sentences summarizing the visit, starting with patient demographics using the provided name, age, and gender (e.g. "Kamran, 34-year-old male, …") then the reason for visit and key points. Use "Not mentioned" only if demographics are missing.
-- prescribed_medicines: list of medicines the doctor prescribed or ordered in the transcript only; use [] if none.
-- prescribed_lab_tests: list of labs/imaging/investigations ordered; use [] if none.
+- prescribed_medicines: list from **transcript only** — medicines the doctor says they prescribed or ordered during this encounter; use [] if none mentioned in speech.
+- prescribed_lab_tests: list from **transcript only** — investigations the doctor orders or requests in speech; use [] if none. Never copy test names from uploaded lab **result** documents into this list unless the doctor also orders them in the summary.
 
 ------------------------------------
 RULES:
