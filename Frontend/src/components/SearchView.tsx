@@ -1,0 +1,104 @@
+import { useState } from "react";
+import { Link } from "react-router-dom";
+import { Search as SearchIcon, User, CalendarDays } from "lucide-react";
+import type { Patient } from "@/hooks/usePatientStore";
+import { visitListLabel } from "@/lib/api";
+import { patientPath, patientVisitPath } from "@/lib/routes";
+
+interface SearchViewProps {
+  patients: Patient[];
+}
+
+export function SearchView({ patients }: SearchViewProps) {
+  const [query, setQuery] = useState("");
+
+  const results = query.trim()
+    ? patients.flatMap((p) => {
+        const items: {
+          type: "patient" | "visit";
+          patient: Patient;
+          visitId?: string;
+          label: string;
+          sub: string;
+        }[] = [];
+        const q = query.toLowerCase();
+        if (
+          p.name.toLowerCase().includes(q) ||
+          p.uiId.toLowerCase().includes(q)
+        ) {
+          items.push({
+            type: "patient",
+            patient: p,
+            label: p.name,
+            sub: `ID ${p.uiId} · ${p.age}y · ${p.gender}`,
+          });
+        }
+        p.visits.forEach((v) => {
+          const label = visitListLabel(v);
+          if (
+            label.toLowerCase().includes(q) ||
+            v.diagnosis.toLowerCase().includes(q) ||
+            (v.visitTitle && v.visitTitle.toLowerCase().includes(q))
+          ) {
+            items.push({
+              type: "visit",
+              patient: p,
+              visitId: v.id,
+              label,
+              sub: `${p.name} · ${v.date}`,
+            });
+          }
+        });
+        return items;
+      })
+    : [];
+
+  return (
+    <div className="max-w-2xl mx-auto py-8 animate-fade-in">
+      <h2 className="text-lg font-semibold text-foreground mb-5">Search</h2>
+      <div className="relative mb-6">
+        <SearchIcon className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+        <input
+          type="text"
+          placeholder="Search patients, visits…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          className="w-full bg-card border border-border rounded-xl pl-10 pr-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 text-foreground placeholder:text-muted-foreground"
+          autoFocus
+        />
+      </div>
+
+      {query.trim() && (
+        <div className="space-y-1">
+          {results.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-8">No results found</p>
+          ) : (
+            results.map((r, i) => {
+              const to =
+                r.type === "visit" && r.visitId
+                  ? patientVisitPath(r.patient.id, r.visitId)
+                  : patientPath(r.patient.id);
+              return (
+              <Link
+                key={i}
+                to={to}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-accent transition-colors text-left"
+              >
+                {r.type === "patient" ? (
+                  <User className="h-4 w-4 text-primary shrink-0" />
+                ) : (
+                  <CalendarDays className="h-4 w-4 text-muted-foreground shrink-0" />
+                )}
+                <div>
+                  <p className="text-sm font-medium text-foreground">{r.label}</p>
+                  <p className="text-xs text-muted-foreground">{r.sub}</p>
+                </div>
+              </Link>
+            );
+            })
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
