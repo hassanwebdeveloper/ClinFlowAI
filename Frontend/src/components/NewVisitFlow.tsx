@@ -126,6 +126,7 @@ type LabAttachment = {
   details?: string;
   extractionMethod?: string;
   suggestedTestName?: string;
+  labTestPattern?: string;
   needsTestName?: boolean;
   extractionError?: string;
 };
@@ -364,6 +365,7 @@ export function NewVisitFlow({
                   details: p.details,
                   extractionMethod: p.extractionMethod,
                   suggestedTestName: p.suggestedTestName,
+                  labTestPattern: p.labTestPattern,
                   needsTestName: p.needsTestName,
                 };
               })
@@ -413,6 +415,7 @@ export function NewVisitFlow({
                 details: p.details,
                 extractionMethod: p.extractionMethod,
                 suggestedTestName: p.suggestedTestName,
+                labTestPattern: p.labTestPattern,
                 needsTestName: p.needsTestName,
               };
             })
@@ -470,6 +473,7 @@ export function NewVisitFlow({
                 details: p.details,
                 extractionMethod: p.extractionMethod,
                 suggestedTestName: p.suggestedTestName,
+                labTestPattern: p.labTestPattern,
                 needsTestName: p.needsTestName,
               };
             })
@@ -820,6 +824,35 @@ export function NewVisitFlow({
       return;
     }
 
+    const buildLabRowsFromAttachments = (): LabReviewRow[] => {
+      const rows: LabReviewRow[] = [];
+      for (const lf of labFiles) {
+        if (lf.status === "loading") {
+          throw new Error("Wait for lab reports to finish analyzing");
+        }
+        if (lf.status === "error") {
+          throw new Error(lf.extractionError || "Could not analyze lab file");
+        }
+        const details = (lf.details ?? "").trim();
+        const extractionMethod = (lf.extractionMethod ?? "").trim();
+        if (!details || !extractionMethod) {
+          throw new Error("Lab report analysis is incomplete — retry extraction");
+        }
+        const suggested = (lf.suggestedTestName ?? "").trim();
+        rows.push({
+          filename: lf.filename,
+          details,
+          extractionMethod: extractionMethod === "vl" ? "vl" : "text",
+          suggestedTestName: suggested,
+          needsTestName: Boolean(lf.needsTestName),
+          extractionError: undefined,
+          labTestPattern: (lf.labTestPattern ?? "").trim() || undefined,
+          testName: suggested,
+        });
+      }
+      return rows;
+    };
+
     if (labReviewRows !== null) {
       finalizeVisitWithLabs();
       return;
@@ -838,30 +871,29 @@ export function NewVisitFlow({
     setTimeout(() => {
       void (async () => {
         try {
-          const pre = await onPrepareVisitFromAudio(blobs, labBlobsPayload(), labReportGroupsForApi());
-          const parts = segmentsForClips(pre, blobs.length);
-          setClips((prev) =>
-            prev.map((c, i) => ({
-              ...c,
-              transcript: parts[i] ?? "",
-            }))
-          );
-          const rows: LabReviewRow[] = pre.labPreviews.map((p) => ({
-            ...p,
-            testName: p.suggestedTestName.trim(),
-          }));
-          const plainTranscript = joinTranscriptSegments(parts);
-          setTranscript(plainTranscript);
-          const previewMatchesLabs = rows.length === labFiles.length;
-          const allFilled =
-            previewMatchesLabs && rows.length > 0 && rows.every((r) => r.testName.trim().length > 0);
-          // Only enter review phase when the user must confirm lab names. Setting labReviewRows before finalize
-          // flips inReviewPhase and hides Transcribe + the lab upload card while still loading — confusing.
+          const rows = buildLabRowsFromAttachments();
+
+          let plainTranscript = buildCombinedTranscriptForFinalize(clipsRef.current);
+          if (!plainTranscript.trim()) {
+            const pre = await onPrepareVisitFromAudio(blobs, [], undefined);
+            const parts = segmentsForClips(pre, blobs.length);
+            setClips((prev) =>
+              prev.map((c, i) => ({
+                ...c,
+                transcript: parts[i] ?? "",
+              }))
+            );
+            plainTranscript = joinTranscriptSegments(parts);
+            setTranscript(plainTranscript);
+          }
+
+          const allFilled = rows.length > 0 && rows.every((r) => r.testName.trim().length > 0);
           if (!allFilled) {
             setLabReviewRows(rows);
             toast.info("Confirm each lab test name, then click Generate notes again.");
             return;
           }
+
           await finalizeVisitCore(blobs, rows, plainTranscript);
           toast.success("Visit created with structured notes");
         } catch (err) {
