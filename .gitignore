@@ -89,4 +89,8 @@ yarn-error.log*
 *.tar.bz2
 *.tar.xz
 *.tar.zst
+
+Backend/.venv/
+Backend/uploads/
+
 ```
