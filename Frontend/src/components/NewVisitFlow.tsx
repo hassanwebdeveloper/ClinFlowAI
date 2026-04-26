@@ -679,6 +679,35 @@ export function NewVisitFlow({
     return groups;
   };
 
+  const buildLabRowsFromAttachments = (): LabReviewRow[] => {
+    const rows: LabReviewRow[] = [];
+    for (const lf of labFiles) {
+      if (lf.status === "loading") {
+        throw new Error("Wait for lab reports to finish analyzing");
+      }
+      if (lf.status === "error") {
+        throw new Error(lf.extractionError || "Could not analyze lab file");
+      }
+      const details = (lf.details ?? "").trim();
+      const extractionMethod = (lf.extractionMethod ?? "").trim();
+      if (!details || !extractionMethod) {
+        throw new Error("Lab report analysis is incomplete — retry extraction");
+      }
+      const suggested = (lf.suggestedTestName ?? "").trim();
+      rows.push({
+        filename: lf.filename,
+        details,
+        extractionMethod: extractionMethod === "vl" ? "vl" : "text",
+        suggestedTestName: suggested,
+        needsTestName: Boolean(lf.needsTestName),
+        extractionError: undefined,
+        labTestPattern: (lf.labTestPattern ?? "").trim() || undefined,
+        testName: suggested,
+      });
+    }
+    return rows;
+  };
+
   const runTranscribeOnly = () => {
     const blobs = blobsToTranscribe();
     if (!blobs.length) {
@@ -693,7 +722,8 @@ export function NewVisitFlow({
     setTimeout(() => {
       void (async () => {
         try {
-          const pre = await onPrepareVisitFromAudio(blobs, labBlobsPayload(), labReportGroupsForApi());
+          // Labs are already analyzed at upload time; do not re-send them for server-side extraction here.
+          const pre = await onPrepareVisitFromAudio(blobs, [], undefined);
           const parts = segmentsForClips(pre, blobs.length);
           setClips((prev) =>
             prev.map((c, i) => ({
@@ -702,13 +732,8 @@ export function NewVisitFlow({
             }))
           );
           setTranscript(joinTranscriptSegments(parts));
-          if (pre.labPreviews.length > 0) {
-            setLabReviewRows(
-              pre.labPreviews.map((p) => ({
-                ...p,
-                testName: p.suggestedTestName.trim(),
-              }))
-            );
+          if (labFiles.length > 0) {
+            setLabReviewRows(buildLabRowsFromAttachments());
           } else {
             setLabReviewRows(null);
           }
@@ -823,35 +848,6 @@ export function NewVisitFlow({
       toast.error("Wait for lab reports to finish analyzing");
       return;
     }
-
-    const buildLabRowsFromAttachments = (): LabReviewRow[] => {
-      const rows: LabReviewRow[] = [];
-      for (const lf of labFiles) {
-        if (lf.status === "loading") {
-          throw new Error("Wait for lab reports to finish analyzing");
-        }
-        if (lf.status === "error") {
-          throw new Error(lf.extractionError || "Could not analyze lab file");
-        }
-        const details = (lf.details ?? "").trim();
-        const extractionMethod = (lf.extractionMethod ?? "").trim();
-        if (!details || !extractionMethod) {
-          throw new Error("Lab report analysis is incomplete — retry extraction");
-        }
-        const suggested = (lf.suggestedTestName ?? "").trim();
-        rows.push({
-          filename: lf.filename,
-          details,
-          extractionMethod: extractionMethod === "vl" ? "vl" : "text",
-          suggestedTestName: suggested,
-          needsTestName: Boolean(lf.needsTestName),
-          extractionError: undefined,
-          labTestPattern: (lf.labTestPattern ?? "").trim() || undefined,
-          testName: suggested,
-        });
-      }
-      return rows;
-    };
 
     if (labReviewRows !== null) {
       finalizeVisitWithLabs();
