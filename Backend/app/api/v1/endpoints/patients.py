@@ -7,7 +7,7 @@ import tempfile
 
 from bson import ObjectId
 from bson.errors import InvalidId
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from motor.motor_asyncio import AsyncIOMotorDatabase, AsyncIOMotorGridFSBucket
 from starlette.datastructures import UploadFile
 from pymongo import ReturnDocument
@@ -538,6 +538,7 @@ async def prepare_visit_from_audio(
 async def create_visit_from_audio(
     patient_id: str,
     request: Request,
+    background_tasks: BackgroundTasks,
     doctor_id: str = Depends(get_current_doctor_id),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
@@ -679,13 +680,6 @@ async def create_visit_from_audio(
         summary_rep = (llm.get("visit_summary_report") or "").strip()
         fallback_diag = diagnosis.strip() or "Visit"
 
-        embedding: list[float] | None = None
-        if summary_rep:
-            try:
-                embedding = await generate_embedding(summary_rep)
-            except Exception:
-                pass
-
         recorded_at = datetime.now(timezone.utc).isoformat()
         base_lr = int(datetime.now(timezone.utc).timestamp() * 1000)
         bucket = AsyncIOMotorGridFSBucket(db, bucket_name=LAB_FILES_BUCKET)
@@ -753,8 +747,6 @@ async def create_visit_from_audio(
             "soap": soap,
             "prescriptions": [],
         }
-        if embedding is not None:
-            visit_doc["visit_summary_embedding"] = embedding
 
         push_ops: dict = {"visits": {"$each": [visit_doc], "$position": 0}}
         if new_lab_records:
@@ -765,6 +757,24 @@ async def create_visit_from_audio(
             {"$push": push_ops},
             return_document=ReturnDocument.AFTER,
         )
+
+        # Generate embeddings asynchronously to keep visit creation fast.
+        if summary_rep.strip():
+            async def _embed_and_store() -> None:
+                try:
+                    emb = await generate_embedding(summary_rep.strip())
+                except Exception:
+                    return
+                try:
+                    await db[PATIENTS_COLLECTION].update_one(
+                        {"_id": oid, "doctor_id": doctor_id, "visits.id": visit_id},
+                        {"$set": {"visits.$.visit_summary_embedding": emb}},
+                    )
+                except Exception:
+                    return
+
+            background_tasks.add_task(asyncio.create_task, _embed_and_store())
+
         return _doc_to_out(updated)
     except HTTPException:
         raise
@@ -865,6 +875,7 @@ async def delete_visit(
 async def regenerate_visit_soap(
     patient_id: str,
     visit_id: str,
+    background_tasks: BackgroundTasks,
     body: RegenerateSoapRequest = RegenerateSoapRequest(),
     doctor_id: str = Depends(get_current_doctor_id),
     db: AsyncIOMotorDatabase = Depends(get_db),
@@ -907,13 +918,6 @@ async def regenerate_visit_soap(
     title = (llm.get("visit_title") or "").strip()
     summary_rep = (llm.get("visit_summary_report") or "").strip()
 
-    embedding: list[float] | None = None
-    if summary_rep:
-        try:
-            embedding = await generate_embedding(summary_rep)
-        except Exception:
-            pass
-
     merged = {
         **v,
         "symptoms": llm.get("symptoms") or [],
@@ -926,12 +930,28 @@ async def regenerate_visit_soap(
         "visit_title": title,
         "visit_summary_report": summary_rep,
     }
-    if embedding is not None:
-        merged["visit_summary_embedding"] = embedding
     if title:
         merged["diagnosis"] = title
     visits[idx] = merged
     await col.update_one({"_id": oid}, {"$set": {"visits": visits}})
+
+    # Generate embeddings asynchronously to keep SOAP regeneration fast.
+    if summary_rep.strip():
+        async def _embed_and_store() -> None:
+            try:
+                emb = await generate_embedding(summary_rep.strip())
+            except Exception:
+                return
+            try:
+                await db[PATIENTS_COLLECTION].update_one(
+                    {"_id": oid, "doctor_id": doctor_id, "visits.id": visit_id},
+                    {"$set": {"visits.$.visit_summary_embedding": emb}},
+                )
+            except Exception:
+                return
+
+        background_tasks.add_task(asyncio.create_task, _embed_and_store())
+
     updated = await col.find_one({"_id": oid})
     return _doc_to_out(updated)
 
