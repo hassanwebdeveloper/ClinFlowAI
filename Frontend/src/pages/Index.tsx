@@ -55,6 +55,10 @@ const Index = () => {
     deleteVisit,
     deletePatient,
     regenerateVisitSoap,
+    refreshVisitAiReminders,
+    hydrateVisitPrescriptions,
+    updateHealthProfile,
+    updateLabReportDetails,
   } = usePatientStore();
 
   const pathTab = useMemo(() => {
@@ -214,6 +218,8 @@ const Index = () => {
             onRegenerateSoap={(visitId, transcript) =>
               regenerateVisitSoap(selectedPatient.id, visitId, transcript)
             }
+            onRefreshAiReminders={(visitId) => refreshVisitAiReminders(selectedPatient.id, visitId)}
+            onHydratePrescriptions={(visitId) => hydrateVisitPrescriptions(selectedPatient.id, visitId)}
             onDeleteVisit={async (visitId) => {
               const wasCurrent =
                 selectedVisitId === visitId ||
@@ -230,6 +236,12 @@ const Index = () => {
               await deletePatient(patientId);
               navigate(patientsListPath(), { replace: true });
             }}
+            onSaveHealthProfile={(profile) =>
+              updateHealthProfile(selectedPatient.id, profile)
+            }
+            onUpdateLabReportDetails={(labReportId, details) =>
+              updateLabReportDetails(selectedPatient.id, labReportId, details)
+            }
           />
         )}
         {pathTab === "visits" && <VisitsView patients={patients} />}

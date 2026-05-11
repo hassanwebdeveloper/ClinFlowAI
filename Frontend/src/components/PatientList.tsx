@@ -104,8 +104,7 @@ export function PatientList({ patients, selectedPatientId, onAddPatient, onDelet
           <AlertDialogHeader>
             <AlertDialogTitle>Delete patient?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently remove {pendingDelete?.name} (ref. {pendingDelete?.uiId}) and all of their visits
-              and linked data. This cannot be undone.
+              Deletes {pendingDelete?.name} (ref. {pendingDelete?.uiId}) and all visits — permanent.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

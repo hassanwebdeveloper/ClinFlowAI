@@ -104,7 +104,7 @@ export default function Auth({ onSignIn, onSignUp }: AuthProps) {
               {isSignUp ? "Create your account" : "Welcome back"}
             </h1>
             <p className="text-sm text-muted-foreground text-center mb-6">
-              {isSignUp ? "Tell us about your practice — then start documenting visits faster" : "Sign in to continue"}
+              {isSignUp ? "Practice details, then you’re in" : "Sign in to continue"}
             </p>
 
             <form onSubmit={handleSubmit} className="space-y-4">

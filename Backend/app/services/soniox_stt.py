@@ -11,9 +11,131 @@ import asyncio
 import os
 
 from soniox import SonioxClient
-from soniox.types import CreateTranscriptionConfig, TranslationConfig, TranscriptionTranscript
+from soniox.types import (
+    CreateTranscriptionConfig,
+    StructuredContext,
+    StructuredContextGeneralItem,
+    TranslationConfig,
+    TranscriptionTranscript,
+)
 
 from app.core.config import settings
+
+# Improves translation to English for clinical audio: domain hints + terminology so drug/lab
+# names stay as standard English terms rather than generic descriptions (see Soniox context docs).
+# https://soniox.com/docs/stt/concepts/context
+# https://soniox.com/docs/stt/async/async-translation
+_CLINICAL_CONTEXT_TEXT = (
+    "Medical consultation or dictation. Clinicians name medications, doses, lab tests, "
+    "and diagnoses. English output should use established international drug names and "
+    "standard laboratory nomenclature where applicable."
+)
+
+_CLINICAL_TERMS: tuple[str, ...] = (
+    # Analgesics / antipyretics (user example)
+    "Panadol",
+    "Tylenol",
+    "Paracetamol",
+    "Acetaminophen",
+    "Ibuprofen",
+    "Brufen",
+    "Diclofenac",
+    "Voltaren",
+    "Naproxen",
+    "Aspirin",
+    "Tramadol",
+    "Morphine",
+    # Common antibiotics / GI
+    "Amoxicillin",
+    "Augmentin",
+    "Clavulanate",
+    "Azithromycin",
+    "Ceftriaxone",
+    "Ciprofloxacin",
+    "Metronidazole",
+    "Omeprazole",
+    "Pantoprazole",
+    "Lansoprazole",
+    # Cardio / diabetes / chronic
+    "Atorvastatin",
+    "Metformin",
+    "Glimepiride",
+    "Insulin",
+    "Amlodipine",
+    "Losartan",
+    "Atenolol",
+    "Bisoprolol",
+    "Furosemide",
+    "Spironolactone",
+    "Warfarin",
+    "Rivaroxaban",
+    "Apixaban",
+    "Levothyroxine",
+    # Respiratory / allergy
+    "Salbutamol",
+    "Albuterol",
+    "Ventolin",
+    "Budesonide",
+    "Montelukast",
+    "Cetirizine",
+    "Loratadine",
+    # Labs and imaging (abbreviations + names)
+    "CBC",
+    "Complete Blood Count",
+    "LFT",
+    "Liver Function Test",
+    "KFT",
+    "RFT",
+    "Renal Function Test",
+    "TFT",
+    "Thyroid Function Test",
+    "HbA1c",
+    "Hemoglobin A1c",
+    "CRP",
+    "ESR",
+    "Lipid Profile",
+    "D-Dimer",
+    "Troponin",
+    "BNP",
+    "PT",
+    "INR",
+    "aPTT",
+    "MRI",
+    "CT",
+    "Ultrasound",
+    "X-ray",
+    "ECG",
+    "EKG",
+)
+
+
+def _clinical_translation_context() -> StructuredContext:
+    return StructuredContext(
+        general=[
+            StructuredContextGeneralItem(key="domain", value="Healthcare"),
+            StructuredContextGeneralItem(
+                key="topic",
+                value="Clinical consultation, examination, and medical documentation",
+            ),
+            StructuredContextGeneralItem(
+                key="intent",
+                value="Accurate English clinical transcript with faithful medication and lab terminology",
+            ),
+            StructuredContextGeneralItem(
+                key="instructions",
+                value=(
+                    "Translate to English for clinical documentation. Preserve medication "
+                    "brand names and standard drug names in English (for example Panadol, "
+                    "Augmentin); do not substitute vague phrases such as pain pill, headache "
+                    "tablet, or antibiotic tablet when a specific drug name is intended. "
+                    "Keep conventional laboratory and imaging terms and abbreviations "
+                    "(CBC, LFT, HbA1c, MRI). Output clear medical English, not paraphrased "
+                    "lay descriptions of drugs or tests."
+                ),
+            ),
+        ],
+        text=_CLINICAL_CONTEXT_TEXT
+    )
 
 
 def _text_from_soniox_transcript(
@@ -52,6 +174,7 @@ def _transcribe_file_sync(
             translation=TranslationConfig(type="one_way", target_language="en"),
             enable_language_identification=True,
             language_hints=["en", "ur", "hi", "es"],
+            context=_clinical_translation_context(),
         )
     elif lang:
         config = CreateTranscriptionConfig(model=model, language_hints=[lang])

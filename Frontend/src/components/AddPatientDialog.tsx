@@ -69,7 +69,7 @@ export function AddPatientDialog({ onAdd }: AddPatientDialogProps) {
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4 mt-2">
           <div>
-            <p className="text-xs text-muted-foreground mb-1.5">Patient reference ID (cannot be changed later)</p>
+            <p className="text-xs text-muted-foreground mb-1.5">Reference ID — fixed after save</p>
             <Input
               placeholder="e.g. P-2041"
               value={uiId}

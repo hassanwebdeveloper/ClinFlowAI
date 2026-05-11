@@ -29,6 +29,7 @@ import {
 import type { Visit } from "@/hooks/usePatientStore";
 import {
   extractLabReportsApi,
+  type ApiLabAnalyteValue,
   type LabCacheEntry,
   type LabPreviewMapped,
   type LabReportGroupsPayload,
@@ -129,6 +130,7 @@ type LabAttachment = {
   labTestPattern?: string;
   needsTestName?: boolean;
   extractionError?: string;
+  analytes?: ApiLabAnalyteValue[];
 };
 
 type LabReviewRow = LabPreviewMapped & { testName: string };
@@ -164,6 +166,8 @@ export function NewVisitFlow({
   const [labFiles, setLabFiles] = useState<LabAttachment[]>([]);
   const [labCameraOpen, setLabCameraOpen] = useState(false);
   const [labCameraStream, setLabCameraStream] = useState<MediaStream | null>(null);
+  /** Horizontal mirror for preview + capture — user-facing/desktop only; rear (environment) must stay unmirrored so documents read correctly. */
+  const [labCameraMirrorPreview, setLabCameraMirrorPreview] = useState(true);
   /** Photos queued in the camera dialog before "Add to visit" (one logical report). */
   const [labCameraSessionPhotos, setLabCameraSessionPhotos] = useState<File[]>([]);
   const [transcript, setTranscript] = useState("");
@@ -367,6 +371,7 @@ export function NewVisitFlow({
                   suggestedTestName: p.suggestedTestName,
                   labTestPattern: p.labTestPattern,
                   needsTestName: p.needsTestName,
+                  analytes: p.analytes,
                 };
               })
             );
@@ -417,6 +422,7 @@ export function NewVisitFlow({
                 suggestedTestName: p.suggestedTestName,
                 labTestPattern: p.labTestPattern,
                 needsTestName: p.needsTestName,
+                analytes: p.analytes,
               };
             })
           );
@@ -475,6 +481,7 @@ export function NewVisitFlow({
                 suggestedTestName: p.suggestedTestName,
                 labTestPattern: p.labTestPattern,
                 needsTestName: p.needsTestName,
+                analytes: p.analytes,
               };
             })
           );
@@ -490,8 +497,19 @@ export function NewVisitFlow({
     [patientId]
   );
 
+  const refreshLabCameraMirrorPreview = useCallback((stream: MediaStream | null) => {
+    if (!stream) {
+      setLabCameraMirrorPreview(true);
+      return;
+    }
+    const track = stream.getVideoTracks()[0];
+    const facing = track?.getSettings?.().facingMode as string | undefined;
+    setLabCameraMirrorPreview(facing !== "environment");
+  }, []);
+
   const stopLabCamera = useCallback(() => {
     setLabCameraSessionPhotos([]);
+    setLabCameraMirrorPreview(true);
     setLabCameraStream((prev) => {
       prev?.getTracks().forEach((t) => t.stop());
       return null;
@@ -514,17 +532,19 @@ export function NewVisitFlow({
       setLabCameraSessionPhotos([]);
       setLabCameraOpen(true);
       setLabCameraStream(stream);
+      refreshLabCameraMirrorPreview(stream);
     } catch {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
         setLabCameraSessionPhotos([]);
         setLabCameraOpen(true);
         setLabCameraStream(stream);
+        refreshLabCameraMirrorPreview(stream);
       } catch {
         toast.error("Could not open camera. Allow camera access or use Upload files to pick a photo.");
       }
     }
-  }, []);
+  }, [refreshLabCameraMirrorPreview]);
 
   /** Dialog mounts the <video> after state updates; ref is often null on the first layout pass. */
   useLayoutEffect(() => {
@@ -576,9 +596,10 @@ export function NewVisitFlow({
     if (!ctx) return;
     const w = video.videoWidth;
     const h = video.videoHeight;
-    // Match CSS mirror correction on <video> so the saved JPEG matches the preview (readable text).
-    ctx.translate(w, 0);
-    ctx.scale(-1, 1);
+    if (labCameraMirrorPreview) {
+      ctx.translate(w, 0);
+      ctx.scale(-1, 1);
+    }
     ctx.drawImage(video, 0, 0, w, h);
     canvas.toBlob(
       (blob) => {
@@ -592,7 +613,7 @@ export function NewVisitFlow({
       "image/jpeg",
       0.92
     );
-  }, []);
+  }, [labCameraMirrorPreview]);
 
   const finishCameraSession = useCallback(() => {
     if (!labCameraSessionPhotos.length) {
@@ -617,6 +638,18 @@ export function NewVisitFlow({
 
   const removeLabFile = useCallback((id: string) => {
     setLabFiles((prev) => prev.filter((x) => x.id !== id));
+  }, []);
+
+  /** Doctor-side edit of the AI-extracted lab text before generating notes. Used
+   * in the upload-preview UI; the review-step UI edits its own row state below. */
+  const updateLabFileDetails = useCallback((id: string, details: string) => {
+    setLabFiles((prev) => prev.map((x) => (x.id === id ? { ...x, details } : x)));
+  }, []);
+
+  /** Edit `details` for a row in the post-transcribe review step. The edited
+   * value is sent verbatim to the backend via `labCache.details` on Generate. */
+  const updateLabReviewRowDetails = useCallback((idx: number, details: string) => {
+    setLabReviewRows((prev) => (prev ? prev.map((r, i) => (i === idx ? { ...r, details } : r)) : prev));
   }, []);
 
   const handleLabUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -702,6 +735,7 @@ export function NewVisitFlow({
         needsTestName: Boolean(lf.needsTestName),
         extractionError: undefined,
         labTestPattern: (lf.labTestPattern ?? "").trim() || undefined,
+        analytes: lf.analytes ?? [],
         testName: suggested,
       });
     }
@@ -753,6 +787,7 @@ export function NewVisitFlow({
       extraction_method: r.extractionMethod,
       suggested_test_name: r.suggestedTestName,
       lab_test_pattern: r.labTestPattern ?? "",
+      analytes: r.analytes,
     }));
     const labTestNames = rows.map((r) => r.testName.trim());
     await onFinalizeVisitFromAudio(blobs, labs, {
@@ -886,7 +921,7 @@ export function NewVisitFlow({
           const allFilled = rows.length > 0 && rows.every((r) => r.testName.trim().length > 0);
           if (!allFilled) {
             setLabReviewRows(rows);
-            toast.info("Confirm each lab test name, then click Generate notes again.");
+            toast.info("Confirm each lab name, then Generate notes again.");
             return;
           }
 
@@ -927,8 +962,8 @@ export function NewVisitFlow({
       <div className="bg-card rounded-2xl border border-border card-shadow p-6 mb-5">
         <h3 className="font-semibold text-sm text-foreground mb-2">Audio clips</h3>
         <p className="text-xs text-muted-foreground mb-4">
-          Each time you stop recording, that clip is added to the list. Order is preserved. Use Transcribe audios to get a
-          transcript under each clip (collapsible); Generate notes combines them into structured notes.
+          Each stop saves a clip in order. Use Transcribe audios to fill text, or Generate notes to transcribe and write
+          the chart in one step.
         </p>
 
         {clips.length > 0 && (
@@ -974,7 +1009,7 @@ export function NewVisitFlow({
                           const v = e.target.value;
                           setClips((prev) => prev.map((x) => (x.id === c.id ? { ...x, transcript: v } : x)));
                         }}
-                        placeholder="Transcribe audios to fill this segment, or type here."
+                        placeholder="Transcribe or type here"
                         rows={5}
                         disabled={inReviewPhase}
                         className="w-full text-xs sm:text-sm bg-muted/40 rounded-lg p-3 border border-border text-foreground leading-relaxed resize-y min-h-[100px]"
@@ -1019,9 +1054,9 @@ export function NewVisitFlow({
           )}
 
           <p className="mt-1 text-sm text-muted-foreground text-center px-2">
-            {recordingState === "idle" && "Tap to record. When you stop, the clip is added automatically; you can record again as many times as you need."}
+            {recordingState === "idle" && "Tap to record — stop adds a clip; you can add more."}
             {recordingState === "recording" && "Recording…"}
-            {recordingState === "paused" && "Paused — click to resume"}
+            {recordingState === "paused" && "Paused — tap to resume"}
           </p>
 
           {(recordingState === "recording" || recordingState === "paused") && (
@@ -1061,9 +1096,7 @@ export function NewVisitFlow({
           )}
         >
           <Upload className="h-6 w-6 text-muted-foreground mx-auto mb-2" />
-          <p className="text-sm text-muted-foreground">
-            Drag & drop one or more audio files, or click to browse
-          </p>
+          <p className="text-sm text-muted-foreground">Drop audio files here or tap to browse</p>
           {uploadedFileNames.length > 0 && (
             <p className="text-xs text-primary mt-2">{uploadedFileNames.length} file(s) added</p>
           )}
@@ -1085,11 +1118,8 @@ export function NewVisitFlow({
             Lab reports (optional)
           </h3>
           <p className="text-xs text-muted-foreground mb-4">
-            Upload photos or scans, PDFs, text exports, or Word documents. Each file is analyzed as soon as you add it;
-            open a report below to read the extracted text. Images and scanned PDFs use a vision model; text-based files do
-            not. The overall lab test may be classified as one-time vs monitoring when the document supports that. Extractions
-            are used
-            again when you generate structured notes for the visit.
+            Photos, scans, PDF, text/Word OK. Processing starts when added; open a row to fix text. Photos use vision —
+            typed files use text. Used when you Generate notes.
           </p>
 
           {labFiles.length > 0 && (
@@ -1162,8 +1192,8 @@ export function NewVisitFlow({
                     </Button>
                   </div>
                 </div>
-                {f.status === "done" && f.details?.trim() ? (
-                  <Collapsible className="group">
+                {f.status === "done" ? (
+                  <Collapsible className="group" defaultOpen={!f.details?.trim()}>
                     <CollapsibleTrigger asChild>
                       <button
                         type="button"
@@ -1177,17 +1207,17 @@ export function NewVisitFlow({
                       </button>
                     </CollapsibleTrigger>
                     <CollapsibleContent>
-                      <div className="px-3 pb-3">
+                      <div className="px-3 pb-3 space-y-1">
                         <textarea
-                          readOnly
-                          value={f.details}
-                          className="w-full min-h-[140px] max-h-[320px] text-xs font-mono bg-muted/40 rounded-lg p-3 border border-border text-foreground leading-relaxed resize-y"
+                          value={f.details ?? ""}
+                          onChange={(e) => updateLabFileDetails(f.id, e.target.value)}
+                          placeholder="Edit extracted text before Generate notes"
+                          className="w-full min-h-[140px] max-h-[320px] text-xs font-mono bg-muted/40 rounded-lg p-3 border border-border text-foreground leading-relaxed resize-y focus:outline-none focus:ring-2 focus:ring-primary/20"
                         />
+                        <p className="text-[11px] text-muted-foreground">Edits save with Generate notes.</p>
                       </div>
                     </CollapsibleContent>
                   </Collapsible>
-                ) : f.status === "done" && !f.details?.trim() ? (
-                  <p className="px-3 py-2 text-xs text-muted-foreground">No text extracted from this file.</p>
                 ) : null}
               </div>
             ))}
@@ -1237,8 +1267,7 @@ export function NewVisitFlow({
             <DialogHeader className="space-y-1.5 shrink-0">
               <DialogTitle>Capture lab report</DialogTitle>
               <DialogDescription className="text-xs sm:text-sm">
-                Capture each page or section of the report. Add multiple photos for one report, then tap “Add to visit”.
-                On phones this uses the rear camera when available.
+                Snap each page if needed — several photos can be one report. Phones use rear camera when possible.
               </DialogDescription>
             </DialogHeader>
             {/* Tall area on mobile: aspect-video on a narrow column was ~200px tall; use dvh so preview is usable */}
@@ -1248,8 +1277,12 @@ export function NewVisitFlow({
                 ref={labVideoRef}
                 playsInline
                 muted
-                className="absolute inset-0 h-full w-full object-contain [transform:scaleX(-1)]"
+                className={cn(
+                  "absolute inset-0 h-full w-full object-contain",
+                  labCameraMirrorPreview && "[transform:scaleX(-1)]"
+                )}
                 onLoadedMetadata={(e) => {
+                  refreshLabCameraMirrorPreview(labCameraStream);
                   void e.currentTarget.play().catch(() => {});
                 }}
                 onCanPlay={(e) => {
@@ -1268,8 +1301,7 @@ export function NewVisitFlow({
                   </div>
                 ))}
                 <p className="text-xs text-muted-foreground self-center min-w-[8rem]">
-                  {labCameraSessionPhotos.length} photo
-                  {labCameraSessionPhotos.length !== 1 ? "s" : ""} — add more or finish.
+                  {labCameraSessionPhotos.length} shot{labCameraSessionPhotos.length !== 1 ? "s" : ""} — add more or finish
                 </p>
               </div>
             ) : null}
@@ -1312,14 +1344,13 @@ export function NewVisitFlow({
           )}
           {nLab > 0 && !labsAnalyzing && (
             <p className="text-xs text-muted-foreground text-center">
-              {nLab} lab file{nLab !== 1 ? "s" : ""} — use Transcribe audios to preview transcript and lab text, or Generate
-              notes to create the visit in one step (you can confirm lab test names if needed).
+              {nLab} lab file{nLab !== 1 ? "s" : ""} — Transcribe to preview, or Generate notes to finish (confirm test names
+              if asked).
             </p>
           )}
           {nLab === 0 && (
             <p className="text-xs text-muted-foreground text-center max-w-md">
-              Transcribe audios to preview and edit the transcript first, or Generate notes to transcribe and create the
-              visit in one step.
+              Transcribe to edit text first, or Generate notes to transcribe and create the visit at once.
             </p>
           )}
           <div className="flex flex-col sm:flex-row flex-wrap items-stretch sm:items-center justify-center gap-2 w-full max-w-md">
@@ -1362,9 +1393,7 @@ export function NewVisitFlow({
         <div className="space-y-5 mb-5 animate-fade-in">
           <div className="bg-card rounded-2xl border border-border card-shadow p-5">
             <h3 className="font-semibold text-sm text-foreground mb-3">Transcript</h3>
-            <p className="text-xs text-muted-foreground mb-2">
-              Edit if needed. Structured notes will use this text together with the lab extractions below.
-            </p>
+            <p className="text-xs text-muted-foreground mb-2">Edit if needed — used with the labs below.</p>
             <textarea
               value={transcript}
               onChange={(e) => setTranscript(e.target.value)}
@@ -1379,9 +1408,8 @@ export function NewVisitFlow({
               Lab reports ({labReviewRows.length})
             </h3>
             <p className="text-xs text-muted-foreground mb-4">
-              Each file is one report. The lab test name is the overall ordered test on the report (e.g. Complete Blood
-              Count / CBC) — not each separate result line (WBC, hemoglobin, etc.). If that name was not on the document,
-              enter it before generating notes.
+              One row per file. Test name = order name (e.g. CBC), not each line result. Enter it if missing, then Generate
+              notes.
             </p>
             <div className="space-y-4">
               {labReviewRows.map((row, idx) => (
@@ -1406,9 +1434,7 @@ export function NewVisitFlow({
                       className="text-sm"
                     />
                     {row.needsTestName && !row.suggestedTestName.trim() ? (
-                      <p className="text-xs text-amber-700 dark:text-amber-500">
-                        No lab test name was found on this file — enter the ordered test (e.g. CBC).
-                      </p>
+                      <p className="text-xs text-amber-700 dark:text-amber-500">Enter the test name (e.g. CBC).</p>
                     ) : null}
                     <p className="text-xs text-muted-foreground truncate" title={row.filename}>
                       File: {row.filename}
@@ -1446,12 +1472,14 @@ export function NewVisitFlow({
                       </button>
                     </CollapsibleTrigger>
                     <CollapsibleContent>
-                      <div className="px-3 pb-3 pt-0">
+                      <div className="px-3 pb-3 pt-0 space-y-1">
                         <textarea
-                          readOnly
                           value={row.details}
-                          className="w-full min-h-[160px] text-xs font-mono bg-muted/40 rounded-lg p-3 border border-border text-foreground leading-relaxed resize-y"
+                          onChange={(e) => updateLabReviewRowDetails(idx, e.target.value)}
+                          placeholder="Edit extracted text before Generate notes"
+                          className="w-full min-h-[160px] text-xs font-mono bg-muted/40 rounded-lg p-3 border border-border text-foreground leading-relaxed resize-y focus:outline-none focus:ring-2 focus:ring-primary/20"
                         />
+                        <p className="text-[11px] text-muted-foreground">Edits save with Generate notes.</p>
                       </div>
                     </CollapsibleContent>
                   </Collapsible>

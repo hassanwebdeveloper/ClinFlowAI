@@ -113,8 +113,7 @@ export function VisitTimeline({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete this visit?</AlertDialogTitle>
             <AlertDialogDescription>
-              This removes the visit from the chart. Lab files stay on the patient but are unlinked from this visit.
-              This cannot be undone.
+              Removes this visit. Lab files stay on the patient (unlinked here). Can&apos;t be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
