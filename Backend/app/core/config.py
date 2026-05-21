@@ -42,6 +42,16 @@ class Settings(BaseSettings):
     # Uploads
     UPLOAD_DIR: str = "uploads"
 
+    # SMTP (password reset emails)
+    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM: str = "ClinFlowAI <no-reply@clinflowai.com>"
+    SMTP_USE_TLS: bool = True
+    FRONTEND_BASE_URL: str = "http://localhost:5173"
+    PASSWORD_RESET_TOKEN_EXPIRE_SECONDS: int = 3600
+
     class Config:
         env_file = ".env"
 
