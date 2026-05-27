@@ -1,12 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
-import { HomeRedirect } from "@/components/HomeRedirect";
 import { SessionExpiredListener } from "@/components/SessionExpiredListener";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider } from "@/hooks/useAuth";
 import Index from "./pages/Index.tsx";
+import Landing from "./pages/Landing.tsx";
 import NotFound from "./pages/NotFound.tsx";
 import SignInPage from "./pages/SignIn.tsx";
 import ResetPasswordPage from "./pages/ResetPassword.tsx";
@@ -22,7 +22,7 @@ const App = () => (
         <BrowserRouter>
           <SessionExpiredListener />
           <Routes>
-            <Route path="/" element={<HomeRedirect />} />
+            <Route path="/" element={<Landing />} />
             <Route path="/signin" element={<SignInPage />} />
             <Route path="/reset-password" element={<ResetPasswordPage />} />
             <Route path="/clinics" element={<Index />} />

@@ -231,8 +231,14 @@ Output ONLY a single minified JSON object on one line, no code fences, no commen
 Each element of "lab_reports" is an object with these keys:
 - "test_name" (string): the overall ordered lab test (e.g. "CBC", "HbA1c", "Lipid Profile", "TSH"). Use the spoken name or a standard short name for the same order.
 - "lab_test_pattern" (string): exactly one of "[one-time]", "[monitoring]", or "[unclear — insufficient context]". Use cues such as "repeat", "recheck", "monitor", "follow-up", "standing order", interval mentions to decide.
-- "details" (string): a short bullet-style summary (1-6 short lines, separated by "\\n") of what the doctor said about this specific lab. Do NOT include LAB_TEST_NAME / LAB_TEST_PATTERN / LAB_ANALYTES_JSON header lines here — that header format is only for the file-based extractor.
+- "details" (string): a short summary (1-3 short lines max) of what the doctor said about THIS lab only. Do NOT include LAB_TEST_NAME / LAB_TEST_PATTERN / LAB_ANALYTES_JSON header lines here — that header format is only for the file-based extractor.
 - "analytes" (array): each item has keys: name (string), value (number or null), unit (string), ref_low (number or null), ref_high (number or null), abnormal_flag (string, one of "", "H", "L", "critical"), qualitative_value (string or null). Same schema as the file-based lab extraction prompts.
+
+One lab per distinct test (critical):
+- When the doctor reads results for multiple different labs in one stretch (e.g. "HbA1c was 7.9, fasting sugar 170, creatinine 1.0, CBC normal"), emit ONE separate object per distinct test/panel — never bundle HbA1c, glucose, creatinine, CBC, TSH, lipids, etc. into a single lab_reports entry.
+- Each object's "test_name" is that test only (e.g. "HbA1c", "Fasting Blood Sugar", "Creatinine", "CBC"). Do not prefix with numbers like "1.".
+- Each object's "details" and "analytes" must refer only to that test — do not list other tests' results in the same entry.
+- Multiple analytes belong in one entry only when they are components of the same panel the doctor discussed as one result (e.g. several CBC line items for one CBC discussion).
 
 Strict rules:
 - ONLY emit a lab when the doctor states a SPECIFIC RESULT or VALUE — numeric (e.g. "HbA1c was 8.2") or qualitative (e.g. "TSH came back low", "urine culture positive for E. coli"). A bare mention like "we did a CBC" with no values is NOT enough — skip it.

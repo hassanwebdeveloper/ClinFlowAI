@@ -43,6 +43,8 @@ from app.services.lab_reports import (
     extract_lab_from_image_group,
     extract_lab_from_saved_file,
     extract_transcript_lab_reports,
+    refresh_transcript_lab_reports_for_visit,
+    transcript_lab_report_records,
 )
 from app.services.upload_cleanup import (
     collect_lab_file_url,
@@ -1087,22 +1089,11 @@ async def create_visit_from_audio(
 
         # Append any lab reports the doctor verbally described (no uploaded file).
         # These already have uploaded test names filtered out, so uploads keep priority.
-        for j, item in enumerate(transcript_lab_items):
-            new_lab_records.append({
-                "id": f"lr-{base_lr}-t{j}",
-                "recorded_at": recorded_at,
-                "filename": "",
-                "extraction_method": "transcript",
-                "details": item.get("details") or "",
-                "test_name": item.get("test_name") or "",
-                "lab_test_pattern": item.get("lab_test_pattern") or "",
-                "visit_id": visit_id,
-                "file_id": None,
-                "file_url": None,
-                "extra_file_ids": [],
-                "extra_file_urls": [],
-                "analytes": list(item.get("analytes") or []),
-            })
+        new_lab_records.extend(
+            transcript_lab_report_records(
+                transcript_lab_items, visit_id, id_base_ms=base_lr
+            )
+        )
 
         visit_doc: dict = {
             "id": visit_id,
@@ -1329,6 +1320,13 @@ async def regenerate_visit_soap(
         "age": doc.get("age", ""),
         "gender": doc.get("gender", ""),
     }
+    # Re-extract spoken lab results (split per test) and replace prior transcript rows.
+    lab_reports = await refresh_transcript_lab_reports_for_visit(
+        list(doc.get("lab_reports") or []),
+        visit_id,
+        transcript,
+    )
+    doc = {**doc, "lab_reports": lab_reports}
     # Rebuild from current lab_reports so doctor-side edits to a single report's
     # extracted text flow into SOAP regeneration. Persist on the visit as cache.
     rebuilt_lab_ctx = _rebuild_visit_lab_context(doc, visit_id)
@@ -1355,6 +1353,7 @@ async def regenerate_visit_soap(
         "soap": llm.get("soap") or v.get("soap", {}),
         "visit_title": title,
         "visit_summary_report": summary_rep,
+        "lab_report_details": rebuilt_lab_ctx,
     }
     if title:
         merged["diagnosis"] = title
@@ -1375,7 +1374,10 @@ async def regenerate_visit_soap(
         merged["visit_summary_embedding"] = emb_vec
 
     visits[idx] = merged
-    await col.update_one({"_id": oid, "doctor_id": doctor_id}, {"$set": {"visits": visits}})
+    await col.update_one(
+        {"_id": oid, "doctor_id": doctor_id},
+        {"$set": {"visits": visits, "lab_reports": lab_reports}},
+    )
 
     background_tasks.add_task(refresh_health_profile, db, doctor_id, oid)
 
