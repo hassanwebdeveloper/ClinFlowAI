@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import { Activity } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { APP_NAME } from "@/lib/branding";
-import { signInPath } from "@/lib/routes";
+import { signInPath, signUpPath } from "@/lib/routes";
 
 const navLinks = [
   { href: "#how-it-works", label: "How It Works" },
@@ -50,7 +50,7 @@ export function LandingHeader() {
             className="rounded-full bg-teal-600 px-5 shadow-lg shadow-teal-600/25 hover:bg-teal-700"
             asChild
           >
-            <Link to={signInPath()}>Get Started</Link>
+            <Link to={signUpPath()}>Get Started</Link>
           </Button>
         </div>
       </div>

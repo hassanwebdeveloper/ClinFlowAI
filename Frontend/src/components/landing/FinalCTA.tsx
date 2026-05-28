@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { ArrowRight, CheckCircle, Mic } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { signInPath } from "@/lib/routes";
+import { signUpPath } from "@/lib/routes";
 
 export function LandingFinalCTA() {
   return (
@@ -44,7 +44,7 @@ export function LandingFinalCTA() {
           className="mt-10 rounded-full bg-white px-10 py-7 text-lg font-semibold text-teal-800 shadow-2xl transition-all hover:scale-[1.03] hover:bg-teal-50"
           asChild
         >
-          <Link to={signInPath()}>
+          <Link to={signUpPath()}>
             Start Your Free Trial
             <ArrowRight className="ml-2 h-5 w-5" />
           </Link>

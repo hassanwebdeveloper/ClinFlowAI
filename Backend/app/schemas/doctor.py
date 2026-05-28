@@ -3,7 +3,6 @@ from pydantic import BaseModel, EmailStr, Field
 
 class DoctorSignup(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=8)
     name: str = Field(min_length=1, max_length=200)
     country: str = Field(min_length=1, max_length=120)
     city: str = Field(min_length=1, max_length=120)
@@ -47,3 +46,22 @@ class ResetPasswordRequest(BaseModel):
 
 class MessageResponse(BaseModel):
     message: str
+
+
+class AccessRequestReviewResponse(BaseModel):
+    id: str
+    email: str
+    name: str
+    country: str
+    city: str
+    specialty: str
+    years_of_experience: int
+    practice_name: str | None = None
+    license_number: str | None = None
+    status: str
+    decided_at: str | None = None
+    created_at: str
+
+
+class AccessRequestDecisionRequest(BaseModel):
+    decision: str = Field(pattern="^(approve|reject)$")

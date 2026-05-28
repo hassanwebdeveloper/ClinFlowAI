@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import { ArrowRight, Mic, Monitor, User, Users, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { signInPath } from "@/lib/routes";
+import { signUpPath } from "@/lib/routes";
 
 function StarRating() {
   return (
@@ -65,7 +65,7 @@ export function LandingHero() {
                 className="rounded-full bg-teal-600 px-8 py-6 text-base shadow-xl shadow-teal-600/30 transition-all hover:scale-[1.02] hover:bg-teal-700 hover:shadow-teal-600/40"
                 asChild
               >
-                <Link to={signInPath()}>
+                <Link to={signUpPath()}>
                   Start Free Trial
                   <ArrowRight className="ml-2 h-5 w-5" />
                 </Link>
@@ -126,7 +126,7 @@ function ProblemSolutionVisual() {
             <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-slate-200">
               <Monitor className="h-7 w-7 text-slate-500" />
             </div>
-            <span className="text-[11px] font-medium text-slate-500">Screen left</span>
+            <span className="text-[11px] font-medium text-slate-500">Screen</span>
           </div>
 
           <div className="flex flex-1 flex-col items-center gap-1">
@@ -146,7 +146,7 @@ function ProblemSolutionVisual() {
             <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-teal-100">
               <User className="h-7 w-7 text-teal-600" />
             </div>
-            <span className="text-[11px] font-medium text-teal-700">Patient right</span>
+            <span className="text-[11px] font-medium text-teal-700">Patient</span>
           </div>
         </div>
         <p className="mt-3 text-center text-sm text-slate-500">

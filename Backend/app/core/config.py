@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str = ""
     SMTP_FROM: str = "ClinFlowAI <no-reply@clinflowai.com>"
     SMTP_USE_TLS: bool = True
+    ACCESS_REQUEST_EMAIL: str = ""
+    ACCESS_REQUEST_REVIEW_BASE_URL: str = "/access-requests/review"
     FRONTEND_BASE_URL: str = "http://localhost:5173"
     PASSWORD_RESET_TOKEN_EXPIRE_SECONDS: int = 3600
 

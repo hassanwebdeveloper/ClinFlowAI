@@ -10,6 +10,7 @@ import Landing from "./pages/Landing.tsx";
 import NotFound from "./pages/NotFound.tsx";
 import SignInPage from "./pages/SignIn.tsx";
 import ResetPasswordPage from "./pages/ResetPassword.tsx";
+import AccessRequestReviewPage from "./pages/AccessRequestReview.tsx";
 
 const queryClient = new QueryClient();
 
@@ -24,7 +25,9 @@ const App = () => (
           <Routes>
             <Route path="/" element={<Landing />} />
             <Route path="/signin" element={<SignInPage />} />
+            <Route path="/signup" element={<SignInPage />} />
             <Route path="/reset-password" element={<ResetPasswordPage />} />
+            <Route path="/access-requests/review" element={<AccessRequestReviewPage />} />
             <Route path="/clinics" element={<Index />} />
             <Route path="/patients/:patientId/visits/:visitId" element={<Index />} />
             <Route path="/patients/:patientId" element={<Index />} />

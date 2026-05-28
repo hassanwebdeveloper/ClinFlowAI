@@ -23,10 +23,11 @@ type AuthMode = "signin" | "signup" | "forgot";
 interface AuthProps {
   onSignIn: (email: string, password: string) => Promise<void>;
   onSignUp: (payload: DoctorSignupPayload) => Promise<void>;
+  initialMode?: AuthMode;
 }
 
-export default function Auth({ onSignIn, onSignUp }: AuthProps) {
-  const [mode, setMode] = useState<AuthMode>("signin");
+export default function Auth({ onSignIn, onSignUp, initialMode = "signin" }: AuthProps) {
+  const [mode, setMode] = useState<AuthMode>(initialMode);
   const [forgotSent, setForgotSent] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -78,7 +79,7 @@ export default function Auth({ onSignIn, onSignUp }: AuthProps) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email || !password) {
+    if (!email || (!isSignUp && !password)) {
       toast({ title: "Please fill in all fields", variant: "destructive" });
       return;
     }
@@ -106,7 +107,6 @@ export default function Auth({ onSignIn, onSignUp }: AuthProps) {
         const years = Number.parseInt(yearsExperience, 10);
         await onSignUp({
           email,
-          password,
           name: name.trim(),
           country: country.trim(),
           city: city.trim(),
@@ -115,7 +115,8 @@ export default function Auth({ onSignIn, onSignUp }: AuthProps) {
           practice_name: practiceName.trim() || undefined,
           license_number: licenseNumber.trim() || undefined,
         });
-        toast({ title: "Account created successfully ✓" });
+        toast({ title: "Access request submitted ✓" });
+        goToSignIn();
       } else {
         await onSignIn(email, password);
         toast({ title: "Welcome back ✓" });
@@ -129,13 +130,13 @@ export default function Auth({ onSignIn, onSignUp }: AuthProps) {
   };
 
   const title =
-    isForgot ? "Reset your password" : isSignUp ? "Create your account" : "Welcome back";
+    isForgot ? "Reset your password" : isSignUp ? "Request account access" : "Welcome back";
   const subtitle = isForgot
     ? forgotSent
       ? "We sent a link if that email is registered"
       : "Enter your email and we'll send a reset link"
     : isSignUp
-      ? "Practice details, then you're in"
+      ? "Share your details and we will review your request"
       : "Sign in to continue";
 
   return (
@@ -333,12 +334,12 @@ export default function Auth({ onSignIn, onSignUp }: AuthProps) {
                       />
                     </div>
                   </div>
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <Label htmlFor="auth-password" className="text-xs text-muted-foreground">
-                        Password {isSignUp && <span className="font-normal">(min. 8 characters)</span>}
-                      </Label>
-                      {!isSignUp && (
+                  {!isSignUp && (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Label htmlFor="auth-password" className="text-xs text-muted-foreground">
+                          Password
+                        </Label>
                         <button
                           type="button"
                           onClick={() => {
@@ -350,26 +351,26 @@ export default function Auth({ onSignIn, onSignUp }: AuthProps) {
                         >
                           Forgot password?
                         </button>
-                      )}
+                      </div>
+                      <div className="relative">
+                        <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                        <Input
+                          id="auth-password"
+                          type="password"
+                          placeholder="Password"
+                          value={password}
+                          onChange={(e) => setPassword(e.target.value)}
+                          className="pl-10 h-11 rounded-xl"
+                        />
+                      </div>
                     </div>
-                    <div className="relative">
-                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                      <Input
-                        id="auth-password"
-                        type="password"
-                        placeholder="Password"
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        className="pl-10 h-11 rounded-xl"
-                      />
-                    </div>
-                  </div>
+                  )}
                   <Button
                     type="submit"
                     disabled={submitting}
                     className="w-full h-11 rounded-xl text-sm font-medium"
                   >
-                    {isSignUp ? "Create Account" : "Sign In"}
+                    {isSignUp ? "Request Access" : "Sign In"}
                     <ArrowRight className="h-4 w-4 ml-1" />
                   </Button>
                 </form>
@@ -384,6 +385,8 @@ export default function Auth({ onSignIn, onSignUp }: AuthProps) {
                       } else {
                         setMode("signup");
                         setForgotSent(false);
+                        setEmail("");
+                        setPassword("");
                       }
                     }}
                     className="text-sm text-muted-foreground hover:text-primary transition-colors"
