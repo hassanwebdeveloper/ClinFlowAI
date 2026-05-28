@@ -1,13 +1,14 @@
 import asyncio
 import json
 from datetime import datetime, timezone
+from typing import Any
 
 import os
 import tempfile
 
 from bson import ObjectId
 from bson.errors import InvalidId
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from motor.motor_asyncio import AsyncIOMotorDatabase, AsyncIOMotorGridFSBucket
 from starlette.datastructures import UploadFile
 from pymongo import ReturnDocument
@@ -16,10 +17,15 @@ from app.api.deps import get_current_doctor_id
 from app.core.config import settings
 from app.core.database import get_database
 from app.schemas.patient import (
-    AiSuggestion,
-    AiSuggestionsResponse,
     ExtractLabReportsResponse,
+    HealthProfile,
+    HealthProfileAllergy,
+    HealthProfileCondition,
+    HealthProfileMedication,
+    HealthProfilePatch,
+    LabAnalyteValue,
     LabPreviewItem,
+    LabReportPatch,
     LabReportRecord,
     PatientCreate,
     PatientOut,
@@ -27,10 +33,19 @@ from app.schemas.patient import (
     RegenerateSoapRequest,
     VisitIn,
     VisitPatch,
-    VisitReference,
     VisitSoapPatch,
 )
-from app.services.lab_reports import extract_lab_from_image_group, extract_lab_from_saved_file
+from app.services.health_profile import (
+    reconcile_health_profile_patch,
+    refresh_health_profile,
+)
+from app.services.lab_reports import (
+    extract_lab_from_image_group,
+    extract_lab_from_saved_file,
+    extract_transcript_lab_reports,
+    refresh_transcript_lab_reports_for_visit,
+    transcript_lab_report_records,
+)
 from app.services.upload_cleanup import (
     collect_lab_file_url,
     collect_visit_file_urls,
@@ -38,7 +53,8 @@ from app.services.upload_cleanup import (
 )
 from app.services.together import (
     cosine_similarity,
-    generate_ai_suggestions,
+    extract_prescriptions_from_transcript,
+    generate_ai_reminders_llm,
     generate_embedding,
     generate_soap_from_transcript,
     transcribe_visit_audio,
@@ -76,6 +92,116 @@ def _lab_reports_from_doc(doc: dict) -> list[LabReportRecord]:
     return out
 
 
+def _hp_str(v: Any) -> str:
+    return "" if v is None else str(v)
+
+
+def _hp_bool(v: Any) -> bool:
+    return False if v is None else bool(v)
+
+
+def _hp_str_list(v: Any) -> list[str]:
+    if v is None:
+        return []
+    if not isinstance(v, list):
+        return []
+    out: list[str] = []
+    for x in v:
+        if x is None:
+            continue
+        s = str(x).strip()
+        if s:
+            out.append(s)
+    return out
+
+
+def _health_profile_allergy_from_row(d: dict) -> HealthProfileAllergy | None:
+    try:
+        return HealthProfileAllergy.model_validate(
+            {
+                "id": _hp_str(d.get("id")),
+                "name": _hp_str(d.get("name")),
+                "severity": _hp_str(d.get("severity")),
+                "reaction": _hp_str(d.get("reaction")),
+                "source_visit_ids": _hp_str_list(d.get("source_visit_ids")),
+                "is_doctor_edited": _hp_bool(d.get("is_doctor_edited")),
+                "dismissed": _hp_bool(d.get("dismissed")),
+                "updated_at": _hp_str(d.get("updated_at")),
+            }
+        )
+    except Exception:
+        return None
+
+
+def _health_profile_med_from_row(d: dict) -> HealthProfileMedication | None:
+    try:
+        return HealthProfileMedication.model_validate(
+            {
+                "id": _hp_str(d.get("id")),
+                "name": _hp_str(d.get("name")),
+                "dosage": _hp_str(d.get("dosage")),
+                "frequency": _hp_str(d.get("frequency")),
+                "indication": _hp_str(d.get("indication")),
+                "source_visit_ids": _hp_str_list(d.get("source_visit_ids")),
+                "is_doctor_edited": _hp_bool(d.get("is_doctor_edited")),
+                "dismissed": _hp_bool(d.get("dismissed")),
+                "updated_at": _hp_str(d.get("updated_at")),
+            }
+        )
+    except Exception:
+        return None
+
+
+def _health_profile_condition_from_row(d: dict) -> HealthProfileCondition | None:
+    try:
+        return HealthProfileCondition.model_validate(
+            {
+                "id": _hp_str(d.get("id")),
+                "name": _hp_str(d.get("name")),
+                "category": _hp_str(d.get("category")),
+                "evidence": _hp_str(d.get("evidence")),
+                "source_visit_ids": _hp_str_list(d.get("source_visit_ids")),
+                "source_lab_report_ids": _hp_str_list(d.get("source_lab_report_ids")),
+                "is_doctor_edited": _hp_bool(d.get("is_doctor_edited")),
+                "dismissed": _hp_bool(d.get("dismissed")),
+                "updated_at": _hp_str(d.get("updated_at")),
+            }
+        )
+    except Exception:
+        return None
+
+
+def _health_profile_from_doc(raw: Any) -> HealthProfile:
+    """Parse Mongo health_profile without dropping the whole document on one bad row."""
+    if not isinstance(raw, dict):
+        return HealthProfile()
+    allergies: list[HealthProfileAllergy] = []
+    for a in raw.get("allergies") or []:
+        if isinstance(a, dict):
+            row = _health_profile_allergy_from_row(a)
+            if row is not None:
+                allergies.append(row)
+    meds: list[HealthProfileMedication] = []
+    for m in raw.get("long_term_medications") or []:
+        if isinstance(m, dict):
+            row = _health_profile_med_from_row(m)
+            if row is not None:
+                meds.append(row)
+    conds: list[HealthProfileCondition] = []
+    for c in raw.get("conditions") or []:
+        if isinstance(c, dict):
+            row = _health_profile_condition_from_row(c)
+            if row is not None:
+                conds.append(row)
+    return HealthProfile(
+        allergies=allergies,
+        long_term_medications=meds,
+        conditions=conds,
+        last_generated_at=_hp_str(raw.get("last_generated_at")),
+        last_visit_id=_hp_str(raw.get("last_visit_id")),
+    )
+
+
 def _doc_to_out(doc: dict) -> PatientOut:
     visits_raw = doc.get("visits") or []
     lab_all = _lab_reports_from_doc(doc)
@@ -102,6 +228,8 @@ def _doc_to_out(doc: dict) -> PatientOut:
         nested = list(by_vid.get(vid, []))
         visits.append(VisitIn.model_validate({**base, "lab_reports": nested}))
 
+    health_profile = _health_profile_from_doc(doc.get("health_profile"))
+
     return PatientOut(
         id=str(doc["_id"]),
         ui_id=doc["ui_id"],
@@ -110,6 +238,7 @@ def _doc_to_out(doc: dict) -> PatientOut:
         gender=doc["gender"],
         visits=visits,
         lab_reports=lab_all,
+        health_profile=health_profile,
     )
 
 
@@ -267,6 +396,192 @@ def _fallback_lab_title(filename: str, index: int) -> str:
     return stem if stem else f"Lab report {index + 1}"
 
 
+def _rebuild_visit_lab_context(doc: dict, visit_id: str) -> str:
+    """Recompose the combined `--- Lab: ... ---` context for a visit from the
+    patient's current `lab_reports` list, mirroring the format used at
+    `create_visit_from_audio` time. Used so doctor-side edits to individual lab
+    report `details` flow into SOAP regeneration.
+    """
+    if not visit_id:
+        return ""
+    blocks: list[str] = []
+    for lr in (doc.get("lab_reports") or []):
+        if not isinstance(lr, dict):
+            continue
+        if (lr.get("visit_id") or "").strip() != visit_id:
+            continue
+        details = (lr.get("details") or "").strip()
+        if not details:
+            continue
+        test_name = (lr.get("test_name") or "").strip() or (lr.get("filename") or "lab-report")
+        filename = (lr.get("filename") or "").strip() or test_name
+        method = (lr.get("extraction_method") or "").strip() or "text"
+        blocks.append(f"--- Lab: {test_name} ({filename}, {method}) ---\n{details}")
+    return "\n\n".join(blocks).strip()
+
+
+SIMILARITY_TOP_K = 5
+SIMILARITY_THRESHOLD = 0.3
+
+
+def _text_for_visit_similarity_embedding(summary: str, transcript: str, visit_title: str) -> str:
+    t = summary.strip()
+    if t:
+        return t[:8000]
+    parts: list[str] = []
+    if visit_title.strip():
+        parts.append(visit_title.strip())
+    tx = transcript.strip()
+    if tx:
+        parts.append(tx[:6000])
+    return "\n\n".join(parts).strip()
+
+
+def _rank_similar_visits_by_embeddings(
+    *,
+    current_visit_id: str,
+    query_embedding: list[float] | None,
+    visits: list[dict],
+    top_k: int = SIMILARITY_TOP_K,
+    threshold: float = SIMILARITY_THRESHOLD,
+) -> list[dict[str, Any]]:
+    if not query_embedding:
+        return []
+    scored: list[tuple[float, dict]] = []
+    for v in visits:
+        if not isinstance(v, dict) or v.get("id") == current_visit_id:
+            continue
+        emb = v.get("visit_summary_embedding")
+        if not emb or not isinstance(emb, list):
+            continue
+        sim = cosine_similarity(query_embedding, emb)
+        if sim >= threshold:
+            scored.append((sim, v))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    out: list[dict[str, Any]] = []
+    for sim, v in scored[:top_k]:
+        vid = str(v.get("id", "")).strip()
+        if not vid:
+            continue
+        out.append({
+            "visit_id": vid,
+            "visit_date": str(v.get("date", "")),
+            "visit_title": str(v.get("visit_title") or v.get("diagnosis") or "").strip(),
+            "similarity": round(float(sim), 4),
+        })
+    return out
+
+
+def _lab_timeline_snippet_for_llm(doc: dict, pending_new: list[dict] | None, max_rows: int = 48) -> list[dict[str, Any]]:
+    combined: list[dict] = list(doc.get("lab_reports") or [])
+    combined = [x for x in combined if isinstance(x, dict)]
+    if pending_new:
+        combined = combined + [x for x in pending_new if isinstance(x, dict)]
+
+    def _sort_rx(lr: dict) -> tuple[str, str]:
+        return (str(lr.get("recorded_at") or "").strip(), str(lr.get("id") or "").strip())
+
+    rows = sorted(combined, key=_sort_rx, reverse=True)[:max_rows]
+    out: list[dict[str, Any]] = []
+    for lr in rows:
+        excerpt = str(lr.get("details") or "").strip()
+        if len(excerpt) > 560:
+            excerpt = excerpt[:560] + "…"
+        analyte_chunks: list[str] = []
+        for a in (lr.get("analytes") or [])[:10]:
+            if not isinstance(a, dict):
+                continue
+            nm = str(a.get("name", "")).strip()
+            if not nm:
+                continue
+            vl = a.get("value")
+            unit = str(a.get("unit", "") or "").strip()
+            analyte_chunks.append(f"{nm}={vl} {unit}".strip())
+        out.append({
+            "id": str(lr.get("id") or ""),
+            "recorded_at": str(lr.get("recorded_at") or ""),
+            "visit_id": str(lr.get("visit_id") or "").strip(),
+            "test_name": str(lr.get("test_name") or "").strip(),
+            "lab_test_pattern": str(lr.get("lab_test_pattern") or "").strip(),
+            "details_excerpt": excerpt,
+            "analytes_preview": "; ".join(analyte_chunks),
+        })
+    return out
+
+
+async def build_ai_reminders_for_visit_after_soap(
+    *,
+    current_visit_id: str,
+    current_visit_date: str,
+    patient_doc: dict,
+    transcript: str,
+    soap_llm_bundle: dict[str, Any],
+    visit_lab_context: str,
+    visits_similarity_pool: list[dict],
+    pending_lab_timeline_records: list[dict] | None,
+) -> tuple[list[float] | None, dict[str, Any]]:
+    """Compute embedding-for-similarity, cosine-ranked peer visits, and LLM reminders."""
+    summary = str(soap_llm_bundle.get("visit_summary_report") or "").strip()
+    title = str(soap_llm_bundle.get("visit_title") or "").strip()
+    embed_txt = _text_for_visit_similarity_embedding(summary, transcript, title)
+
+    query_vec: list[float] | None = None
+    if embed_txt:
+        try:
+            query_vec = await generate_embedding(embed_txt)
+        except Exception:
+            query_vec = None
+
+    similar = _rank_similar_visits_by_embeddings(
+        current_visit_id=current_visit_id,
+        query_embedding=query_vec,
+        visits=visits_similarity_pool,
+    )
+    embedding_hints = list(similar)
+
+    patient_info = {
+        "name": patient_doc.get("name", ""),
+        "age": patient_doc.get("age", ""),
+        "gender": patient_doc.get("gender", ""),
+    }
+    structured = {
+        "visit_title": title,
+        "visit_summary_report": summary,
+        "symptoms": soap_llm_bundle.get("symptoms") or [],
+        "duration": soap_llm_bundle.get("duration") or "",
+        "medical_history": soap_llm_bundle.get("medical_history") or [],
+        "allergies": soap_llm_bundle.get("allergies") or [],
+        "prescriptions": soap_llm_bundle.get("prescriptions") or [],
+        "prescribed_medicines": soap_llm_bundle.get("prescribed_medicines") or [],
+        "prescribed_lab_tests": soap_llm_bundle.get("prescribed_lab_tests") or [],
+        "soap": soap_llm_bundle.get("soap") or {},
+    }
+    labs_rows = _lab_timeline_snippet_for_llm(patient_doc, pending_lab_timeline_records)
+    ctx = visit_lab_context.strip() or ""
+
+    try:
+        llm_part = await generate_ai_reminders_llm(
+            transcript,
+            patient_info,
+            summary,
+            structured,
+            ctx,
+            labs_rows,
+            embedding_hints,
+            current_visit_date,
+        )
+    except Exception:
+        llm_part = {"documentation_gaps": [], "repeat_lab_reminders": []}
+
+    reminders: dict[str, Any] = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "similar_visits": similar,
+        "documentation_gaps": llm_part.get("documentation_gaps") or [],
+        "repeat_lab_reminders": llm_part.get("repeat_lab_reminders") or [],
+    }
+    return query_vec, reminders
+
+
 def _parse_optional_json_array(form, field: str) -> list | None:
     raw = _str_form_field(form, field, "").strip()
     if not raw:
@@ -349,11 +664,11 @@ async def _extract_lab_previews_from_disk_grouped(
         display_fname = first_fname if len(segment) == 1 else f"{first_fname} (+{len(segment) - 1} more)"
         try:
             if len(segment) == 1:
-                details, method, sugg, patt = await extract_lab_from_saved_file(
+                details, method, sugg, patt, analytes = await extract_lab_from_saved_file(
                     segment[0][0], segment[0][1], segment[0][2]
                 )
             else:
-                details, method, sugg, patt = await extract_lab_from_image_group(segment)
+                details, method, sugg, patt, analytes = await extract_lab_from_image_group(segment)
             st = sugg.strip()
             out.append(
                 LabPreviewItem(
@@ -364,6 +679,7 @@ async def _extract_lab_previews_from_disk_grouped(
                     needs_test_name=not bool(st),
                     lab_test_pattern=patt.strip(),
                     extraction_error=None,
+                    analytes=[LabAnalyteValue.model_validate(a) for a in analytes],
                 )
             )
         except Exception as e:
@@ -376,6 +692,7 @@ async def _extract_lab_previews_from_disk_grouped(
                     needs_test_name=True,
                     lab_test_pattern="",
                     extraction_error=str(e)[:800],
+                    analytes=[],
                 )
             )
     return out
@@ -538,6 +855,7 @@ async def prepare_visit_from_audio(
 async def create_visit_from_audio(
     patient_id: str,
     request: Request,
+    background_tasks: BackgroundTasks,
     doctor_id: str = Depends(get_current_doctor_id),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
@@ -617,11 +935,14 @@ async def create_visit_from_audio(
                 parts.append((t or "").strip())
             return "\n\n".join(p for p in parts if p)
 
-        async def run_labs() -> tuple[str, list[tuple[str, str, str, str, str, list[int]]]]:
+        async def run_labs() -> tuple[
+            str,
+            list[tuple[str, str, str, str, str, list[int], list[dict], str]],
+        ]:
             if not lab_disk:
                 return "", []
             blocks: list[str] = []
-            meta: list[tuple[str, str, str, str, str, list[int]]] = []
+            meta: list[tuple[str, str, str, str, str, list[int], list[dict], str]] = []
             for gi, indices in enumerate(lab_groups):
                 segment = [lab_disk[i] for i in indices]
                 first_fname = segment[0][1] or "lab-report"
@@ -632,6 +953,7 @@ async def create_visit_from_audio(
                 method = "text"
                 sugg = ""
                 lab_pat = ""
+                cached_analytes: list[dict] = []
                 use_cache = (
                     lab_cache_entries is not None
                     and gi < len(lab_cache_entries)
@@ -643,21 +965,39 @@ async def create_visit_from_audio(
                     method = (ce.get("extraction_method") or "text").strip() or "text"
                     sugg = (ce.get("suggested_test_name") or "").strip()
                     lab_pat = (ce.get("lab_test_pattern") or "").strip()
+                    raw_an = ce.get("analytes")
+                    if isinstance(raw_an, list):
+                        for a in raw_an:
+                            if not isinstance(a, dict):
+                                continue
+                            try:
+                                cached_analytes.append(
+                                    LabAnalyteValue.model_validate(a).model_dump()
+                                )
+                            except Exception:
+                                continue
+                analytes_list: list[dict] = list(cached_analytes)
                 if not details:
                     if len(segment) == 1:
-                        details, method, sug2, pat2 = await extract_lab_from_saved_file(
+                        details, method, sug2, pat2, an2 = await extract_lab_from_saved_file(
                             segment[0][0], segment[0][1], segment[0][2]
                         )
                     else:
-                        details, method, sug2, pat2 = await extract_lab_from_image_group(segment)
+                        details, method, sug2, pat2, an2 = await extract_lab_from_image_group(segment)
                     if not sugg:
                         sugg = sug2
                     if not lab_pat:
                         lab_pat = pat2.strip()
+                    if not analytes_list:
+                        analytes_list = list(an2)
                 user_n = lab_names[gi] if gi < len(lab_names) else ""
-                final_name = user_n.strip() or sugg.strip() or _fallback_lab_title(display_fname, gi)
+                clean_name = user_n.strip() or sugg.strip()
+                final_name = clean_name or _fallback_lab_title(display_fname, gi)
                 blocks.append(f"--- Lab: {final_name} ({display_fname}, {method}) ---\n{details}")
-                meta.append((details, method, display_fname, final_name, lab_pat, indices))
+                meta.append((
+                    details, method, display_fname, final_name, lab_pat,
+                    indices, analytes_list, clean_name,
+                ))
             return "\n\n".join(blocks), meta
 
         transcript, (lab_context, lab_meta_list) = await asyncio.gather(
@@ -671,7 +1011,26 @@ async def create_visit_from_audio(
             "gender": patient.get("gender", ""),
         }
         lab_ctx = lab_context.strip() or None
-        llm = await generate_soap_from_transcript(transcript, patient_info, lab_ctx)
+
+        # Doctor-spoken lab values: extract structured lab reports from the
+        # transcript so they appear alongside uploaded reports (chartable, on the
+        # same patient timeline). Uploaded files take priority — only real test
+        # names (user-typed or LLM-suggested from the document) are passed as
+        # exclusions, so a fallback filename stem doesn't shadow a spoken test.
+        uploaded_test_names = [m[7] for m in lab_meta_list if m[7]]
+
+        async def run_transcript_labs() -> list[dict]:
+            if not transcript.strip():
+                return []
+            try:
+                return await extract_transcript_lab_reports(transcript, uploaded_test_names)
+            except Exception:
+                return []
+
+        llm, transcript_lab_items = await asyncio.gather(
+            generate_soap_from_transcript(transcript, patient_info, lab_ctx),
+            run_transcript_labs(),
+        )
         soap = llm.get("soap") or {}
 
         visit_date = date.strip() or datetime.now(timezone.utc).date().isoformat()
@@ -679,18 +1038,11 @@ async def create_visit_from_audio(
         summary_rep = (llm.get("visit_summary_report") or "").strip()
         fallback_diag = diagnosis.strip() or "Visit"
 
-        embedding: list[float] | None = None
-        if summary_rep:
-            try:
-                embedding = await generate_embedding(summary_rep)
-            except Exception:
-                pass
-
         recorded_at = datetime.now(timezone.utc).isoformat()
         base_lr = int(datetime.now(timezone.utc).timestamp() * 1000)
         bucket = AsyncIOMotorGridFSBucket(db, bucket_name=LAB_FILES_BUCKET)
         new_lab_records: list[dict] = []
-        for i, (details, method, display_fname, test_name, lab_pat, indices) in enumerate(lab_meta_list):
+        for i, (details, method, display_fname, test_name, lab_pat, indices, analytes, _clean) in enumerate(lab_meta_list):
             extra_ids: list[str] = []
             extra_urls: list[str] = []
             file_id: str | None = None
@@ -732,7 +1084,16 @@ async def create_visit_from_audio(
                 "file_url": file_url,
                 "extra_file_ids": extra_ids,
                 "extra_file_urls": extra_urls,
+                "analytes": list(analytes or []),
             })
+
+        # Append any lab reports the doctor verbally described (no uploaded file).
+        # These already have uploaded test names filtered out, so uploads keep priority.
+        new_lab_records.extend(
+            transcript_lab_report_records(
+                transcript_lab_items, visit_id, id_base_ms=base_lr
+            )
+        )
 
         visit_doc: dict = {
             "id": visit_id,
@@ -751,10 +1112,11 @@ async def create_visit_from_audio(
             "prescribed_medicines": llm.get("prescribed_medicines") or [],
             "prescribed_lab_tests": llm.get("prescribed_lab_tests") or [],
             "soap": soap,
-            "prescriptions": [],
+            "prescriptions": llm.get("prescriptions") or [],
+            # Reminders (+ summary embedding for similarity) are generated on first open
+            # so peer-visit embeddings and DB state are stable.
+            "ai_reminders_pending": True,
         }
-        if embedding is not None:
-            visit_doc["visit_summary_embedding"] = embedding
 
         push_ops: dict = {"visits": {"$each": [visit_doc], "$position": 0}}
         if new_lab_records:
@@ -765,6 +1127,9 @@ async def create_visit_from_audio(
             {"$push": push_ops},
             return_document=ReturnDocument.AFTER,
         )
+
+        background_tasks.add_task(refresh_health_profile, db, doctor_id, oid)
+
         return _doc_to_out(updated)
     except HTTPException:
         raise
@@ -826,6 +1191,61 @@ async def patch_visit(
     return _doc_to_out(updated)
 
 
+@router.post("/{patient_id}/visits/{visit_id}/hydrate-prescriptions", response_model=PatientOut)
+async def hydrate_visit_prescriptions(
+    patient_id: str,
+    visit_id: str,
+    doctor_id: str = Depends(get_current_doctor_id),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """Backfill structured prescriptions (with dosage/frequency when spoken) from the visit transcript.
+
+    No-op when the visit already has any prescription row with dosage or frequency saved.
+    Does not clear legacy medicine names when extraction returns nothing.
+    """
+    oid = _parse_patient_oid(patient_id)
+    col = db[PATIENTS_COLLECTION]
+    doc = await col.find_one({"_id": oid, "doctor_id": doctor_id})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Patient not found",
+        )
+    visits = list(doc.get("visits") or [])
+    idx = next((i for i, v in enumerate(visits) if v.get("id") == visit_id), None)
+    if idx is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Visit not found",
+        )
+    v = visits[idx]
+    transcript = str(v.get("transcript") or "").strip()
+    if not transcript:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Visit has no transcript",
+        )
+    existing_rx = v.get("prescriptions") or []
+    if isinstance(existing_rx, list):
+        for row in existing_rx:
+            if isinstance(row, dict):
+                if str(row.get("dosage") or "").strip() or str(row.get("frequency") or "").strip():
+                    return _doc_to_out(doc)
+
+    try:
+        new_rx = await extract_prescriptions_from_transcript(transcript)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    if not new_rx:
+        return _doc_to_out(doc)
+
+    names = [r["medicine"] for r in new_rx]
+    visits[idx] = {**v, "prescriptions": new_rx, "prescribed_medicines": names}
+    await col.update_one({"_id": oid, "doctor_id": doctor_id}, {"$set": {"visits": visits}})
+    updated = await col.find_one({"_id": oid, "doctor_id": doctor_id})
+    return _doc_to_out(updated)
+
+
 @router.delete("/{patient_id}/visits/{visit_id}", response_model=PatientOut)
 async def delete_visit(
     patient_id: str,
@@ -865,6 +1285,7 @@ async def delete_visit(
 async def regenerate_visit_soap(
     patient_id: str,
     visit_id: str,
+    background_tasks: BackgroundTasks,
     body: RegenerateSoapRequest = RegenerateSoapRequest(),
     doctor_id: str = Depends(get_current_doctor_id),
     db: AsyncIOMotorDatabase = Depends(get_db),
@@ -899,20 +1320,26 @@ async def regenerate_visit_soap(
         "age": doc.get("age", ""),
         "gender": doc.get("gender", ""),
     }
-    lab_ctx = (v.get("lab_report_details") or "").strip() or None
+    # Re-extract spoken lab results (split per test) and replace prior transcript rows.
+    lab_reports = await refresh_transcript_lab_reports_for_visit(
+        list(doc.get("lab_reports") or []),
+        visit_id,
+        transcript,
+    )
+    doc = {**doc, "lab_reports": lab_reports}
+    # Rebuild from current lab_reports so doctor-side edits to a single report's
+    # extracted text flow into SOAP regeneration. Persist on the visit as cache.
+    rebuilt_lab_ctx = _rebuild_visit_lab_context(doc, visit_id)
+    if rebuilt_lab_ctx != (v.get("lab_report_details") or ""):
+        v = {**v, "lab_report_details": rebuilt_lab_ctx}
+        visits[idx] = v
+    lab_ctx = rebuilt_lab_ctx.strip() or None
     try:
         llm = await generate_soap_from_transcript(transcript, patient_info, lab_ctx)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
     title = (llm.get("visit_title") or "").strip()
     summary_rep = (llm.get("visit_summary_report") or "").strip()
-
-    embedding: list[float] | None = None
-    if summary_rep:
-        try:
-            embedding = await generate_embedding(summary_rep)
-        except Exception:
-            pass
 
     merged = {
         **v,
@@ -921,35 +1348,58 @@ async def regenerate_visit_soap(
         "medical_history": llm.get("medical_history") or [],
         "allergies": llm.get("allergies") or [],
         "prescribed_medicines": llm.get("prescribed_medicines") or [],
+        "prescriptions": llm.get("prescriptions") or [],
         "prescribed_lab_tests": llm.get("prescribed_lab_tests") or [],
         "soap": llm.get("soap") or v.get("soap", {}),
         "visit_title": title,
         "visit_summary_report": summary_rep,
+        "lab_report_details": rebuilt_lab_ctx,
     }
-    if embedding is not None:
-        merged["visit_summary_embedding"] = embedding
     if title:
         merged["diagnosis"] = title
+
+    emb_vec, reminders_raw = await build_ai_reminders_for_visit_after_soap(
+        current_visit_id=visit_id,
+        current_visit_date=str(v.get("date") or ""),
+        patient_doc=dict(doc),
+        transcript=transcript,
+        soap_llm_bundle=dict(llm),
+        visit_lab_context=rebuilt_lab_ctx,
+        visits_similarity_pool=list(visits),
+        pending_lab_timeline_records=None,
+    )
+    merged["ai_reminders"] = reminders_raw
+    merged["ai_reminders_pending"] = False
+    if emb_vec:
+        merged["visit_summary_embedding"] = emb_vec
+
     visits[idx] = merged
-    await col.update_one({"_id": oid}, {"$set": {"visits": visits}})
-    updated = await col.find_one({"_id": oid})
+    await col.update_one(
+        {"_id": oid, "doctor_id": doctor_id},
+        {"$set": {"visits": visits, "lab_reports": lab_reports}},
+    )
+
+    background_tasks.add_task(refresh_health_profile, db, doctor_id, oid)
+
+    updated = await col.find_one({"_id": oid, "doctor_id": doctor_id})
     return _doc_to_out(updated)
 
 
-SIMILARITY_TOP_K = 5
-SIMILARITY_THRESHOLD = 0.3
-
-
 @router.post(
-    "/{patient_id}/visits/{visit_id}/ai-suggestions",
-    response_model=AiSuggestionsResponse,
+    "/{patient_id}/visits/{visit_id}/refresh-ai-reminders",
+    response_model=PatientOut,
 )
-async def get_ai_suggestions(
+async def refresh_visit_ai_reminders(
     patient_id: str,
     visit_id: str,
     doctor_id: str = Depends(get_current_doctor_id),
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
+    """Rebuild AI reminders and visit summary embedding — fully awaited (no background split).
+
+    Clients should call this when `ai_reminders_pending` is True (new audio visit). The response
+    returns only after embeddings and the reminder LLM finish and are persisted.
+    """
     oid = _parse_patient_oid(patient_id)
     col = db[PATIENTS_COLLECTION]
     doc = await col.find_one({"_id": oid, "doctor_id": doctor_id})
@@ -957,70 +1407,54 @@ async def get_ai_suggestions(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
 
     visits = list(doc.get("visits") or [])
-    current = next((v for v in visits if v.get("id") == visit_id), None)
-    if current is None:
+    idx = next((i for i, x in enumerate(visits) if x.get("id") == visit_id), None)
+    if idx is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Visit not found")
 
-    transcript = (current.get("transcript") or "").strip()
+    v = visits[idx]
+    transcript = str(v.get("transcript") or "").strip()
     if not transcript:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Visit has no transcript to analyse",
         )
+    rebuilt_lab_ctx = _rebuild_visit_lab_context(doc, visit_id)
 
-    try:
-        query_vec = await generate_embedding(transcript)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Embedding failed: {e}") from e
-
-    scored: list[tuple[float, dict]] = []
-    for v in visits:
-        if v.get("id") == visit_id:
-            continue
-        emb = v.get("visit_summary_embedding")
-        if not emb or not isinstance(emb, list):
-            continue
-        sim = cosine_similarity(query_vec, emb)
-        if sim >= SIMILARITY_THRESHOLD:
-            scored.append((sim, v))
-
-    scored.sort(key=lambda t: t[0], reverse=True)
-    top_history = scored[:SIMILARITY_TOP_K]
-
-    relevant_history = [
-        {
-            "visit_id": v.get("id", ""),
-            "visit_date": v.get("date", ""),
-            "visit_title": v.get("visit_title") or v.get("diagnosis", ""),
-            "visit_summary_report": v.get("visit_summary_report", ""),
-        }
-        for _, v in top_history
-    ]
-
-    patient_info = {
-        "name": doc.get("name", ""),
-        "age": doc.get("age", ""),
-        "gender": doc.get("gender", ""),
+    merged_bundle = {
+        "visit_title": str(v.get("visit_title") or ""),
+        "visit_summary_report": str(v.get("visit_summary_report") or ""),
+        "symptoms": v.get("symptoms") or [],
+        "duration": str(v.get("duration") or ""),
+        "medical_history": v.get("medical_history") or [],
+        "allergies": v.get("allergies") or [],
+        "prescriptions": v.get("prescriptions") or [],
+        "prescribed_medicines": v.get("prescribed_medicines") or [],
+        "prescribed_lab_tests": v.get("prescribed_lab_tests") or [],
+        "soap": v.get("soap") or {},
     }
-    current_summary = (current.get("visit_summary_report") or "").strip()
 
-    try:
-        raw = await generate_ai_suggestions(transcript, patient_info, current_summary, relevant_history)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+    emb_vec, reminders_raw = await build_ai_reminders_for_visit_after_soap(
+        current_visit_id=visit_id,
+        current_visit_date=str(v.get("date") or ""),
+        patient_doc=dict(doc),
+        transcript=transcript,
+        soap_llm_bundle=merged_bundle,
+        visit_lab_context=rebuilt_lab_ctx,
+        visits_similarity_pool=list(visits),
+        pending_lab_timeline_records=None,
+    )
+    patched = dict(v)
+    patched["ai_reminders"] = reminders_raw
+    patched["ai_reminders_pending"] = False
+    if emb_vec:
+        patched["visit_summary_embedding"] = emb_vec
+    if rebuilt_lab_ctx != (v.get("lab_report_details") or ""):
+        patched["lab_report_details"] = rebuilt_lab_ctx
+    visits[idx] = patched
 
-    suggestions = [
-        AiSuggestion(
-            suggestion=s["suggestion"],
-            references=[
-                VisitReference(**r)
-                for r in s.get("references", [])
-                if r.get("visit_id")
-            ],
-        )
-        for s in raw
-    ]
-    return AiSuggestionsResponse(suggestions=suggestions)
+    await col.update_one({"_id": oid, "doctor_id": doctor_id}, {"$set": {"visits": visits}})
+    updated = await col.find_one({"_id": oid, "doctor_id": doctor_id})
+    return _doc_to_out(updated)
 
 
 @router.patch("/{patient_id}/visits/{visit_id}/soap", response_model=PatientOut)
@@ -1052,5 +1486,86 @@ async def patch_visit_soap(
             detail="Visit not found",
         )
     await col.update_one({"_id": oid}, {"$set": {"visits": visits}})
+    updated = await col.find_one({"_id": oid})
+    return _doc_to_out(updated)
+
+
+@router.patch("/{patient_id}/health-profile", response_model=PatientOut)
+async def patch_health_profile(
+    patient_id: str,
+    body: HealthProfilePatch,
+    doctor_id: str = Depends(get_current_doctor_id),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """Doctor-side full replacement of the three profile lists.
+
+    Items whose content differs from what is stored (or are brand new) are marked
+    is_doctor_edited=true so subsequent LLM regenerations preserve them. Items
+    omitted from the patch are tombstoned (dismissed=true) so the LLM stops
+    re-introducing them.
+    """
+    oid = _parse_patient_oid(patient_id)
+    col = db[PATIENTS_COLLECTION]
+    doc = await col.find_one({"_id": oid, "doctor_id": doctor_id})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Patient not found",
+        )
+    existing = doc.get("health_profile") or {}
+    incoming = body.model_dump()
+    merged = reconcile_health_profile_patch(existing, incoming)
+    await col.update_one(
+        {"_id": oid, "doctor_id": doctor_id},
+        {"$set": {"health_profile": merged}},
+    )
+    updated = await col.find_one({"_id": oid, "doctor_id": doctor_id})
+    return _doc_to_out(updated)
+
+
+@router.patch(
+    "/{patient_id}/lab-reports/{lab_report_id}",
+    response_model=PatientOut,
+)
+async def patch_lab_report(
+    patient_id: str,
+    lab_report_id: str,
+    body: LabReportPatch,
+    doctor_id: str = Depends(get_current_doctor_id),
+    db: AsyncIOMotorDatabase = Depends(get_db),
+):
+    """Doctor-side edit of a single lab report's extracted text (`details`).
+
+    Only updates fields that were sent. The visit's combined `lab_report_details`
+    cache is intentionally NOT rebuilt here — it's recomposed lazily by
+    `regenerate_visit_soap` so any further edits before regeneration are picked
+    up in one shot.
+    """
+    oid = _parse_patient_oid(patient_id)
+    col = db[PATIENTS_COLLECTION]
+    doc = await col.find_one({"_id": oid, "doctor_id": doctor_id})
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Patient not found",
+        )
+    lab_reports = list(doc.get("lab_reports") or [])
+    idx = next(
+        (i for i, lr in enumerate(lab_reports) if isinstance(lr, dict) and lr.get("id") == lab_report_id),
+        None,
+    )
+    if idx is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Lab report not found",
+        )
+    patch = body.model_dump(exclude_unset=True)
+    if not patch:
+        return _doc_to_out(doc)
+    updated_lr = {**lab_reports[idx]}
+    if "details" in patch:
+        updated_lr["details"] = (patch["details"] or "").strip()
+    lab_reports[idx] = updated_lr
+    await col.update_one({"_id": oid}, {"$set": {"lab_reports": lab_reports}})
     updated = await col.find_one({"_id": oid})
     return _doc_to_out(updated)

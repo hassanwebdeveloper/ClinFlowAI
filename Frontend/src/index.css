@@ -1,4 +1,5 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Karla:wght@400;500;600&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -118,4 +119,83 @@
 
 .animate-pulse-recording {
   animation: pulse-recording 1.5s ease-in-out infinite;
+}
+
+/* Landing page design system */
+.landing-page {
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-body: 'Karla', system-ui, sans-serif;
+  --color-teal: 173 58% 39%;
+  --color-teal-light: 173 45% 94%;
+  --color-amber: 32 95% 44%;
+  --color-cream: 40 33% 97%;
+  --color-ink: 210 25% 15%;
+  --duration-slow: 500ms;
+  --easing-smooth: cubic-bezier(0.4, 0, 0.2, 1);
+  font-family: var(--font-body);
+  color: hsl(var(--color-ink));
+  background-color: hsl(var(--color-cream));
+}
+
+.landing-page h1,
+.landing-page h2,
+.landing-page h3,
+.landing-page h4 {
+  font-family: var(--font-display);
+}
+
+.landing-page .animate-landing-fade-in {
+  animation: landing-fade-in var(--duration-slow) var(--easing-smooth) both;
+}
+
+.landing-page .animate-landing-float {
+  animation: landing-float 6s ease-in-out infinite;
+}
+
+.landing-page .landing-noise {
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+}
+
+@keyframes landing-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes landing-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-12px);
+  }
+}
+
+@keyframes landing-wave {
+  0%,
+  100% {
+    transform: scaleY(0.4);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.landing-page .animate-wave-bar {
+  animation: landing-wave 1.2s ease-in-out infinite;
+  transform-origin: bottom;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-page .animate-landing-fade-in,
+  .landing-page .animate-landing-float,
+  .landing-page .animate-wave-bar {
+    animation: none !important;
+  }
 }

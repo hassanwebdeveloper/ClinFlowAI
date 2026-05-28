@@ -1,11 +1,20 @@
 import { useState } from "react";
-import { Plus, Trash2, User } from "lucide-react";
+import { useNavigate, useParams } from "react-router-dom";
+import { LayoutDashboard, ListTree, Plus, Trash2, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { VisitTimeline } from "@/components/VisitTimeline";
 import { VisitDetails } from "@/components/VisitDetails";
 import { NewVisitFlow } from "@/components/NewVisitFlow";
-import { labReportsForVisit, type Patient, type Visit } from "@/hooks/usePatientStore";
+import { PatientDashboard } from "@/components/PatientDashboard";
+import {
+  labReportsForVisit,
+  type HealthProfile,
+  type Patient,
+  type Visit,
+} from "@/hooks/usePatientStore";
 import type { LabCacheEntry, LabReportGroupsPayload, PrepareVisitAudioResult, VisitPatchPayload } from "@/lib/api";
+import { patientPath, patientVisitPath } from "@/lib/routes";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -41,7 +50,11 @@ interface PatientViewProps {
   onUpdateSoap: (visitId: string, soap: Visit["soap"]) => Promise<void>;
   onSaveVisit: (visitId: string, patch: VisitPatchPayload) => Promise<void>;
   onRegenerateSoap: (visitId: string, transcript: string) => Promise<void>;
+  onRefreshAiReminders: (visitId: string) => Promise<void>;
+  onHydratePrescriptions: (visitId: string) => Promise<void>;
   onDeleteVisit: (visitId: string) => Promise<void>;
+  onSaveHealthProfile: (profile: HealthProfile) => Promise<unknown>;
+  onUpdateLabReportDetails: (labReportId: string, details: string) => Promise<unknown>;
 }
 
 export function PatientView({
@@ -55,13 +68,48 @@ export function PatientView({
   onUpdateSoap,
   onSaveVisit,
   onRegenerateSoap,
+  onRefreshAiReminders,
+  onHydratePrescriptions,
   onDeleteVisit,
+  onSaveHealthProfile,
+  onUpdateLabReportDetails,
 }: PatientViewProps) {
   const { toast } = useToast();
+  const navigate = useNavigate();
+  const params = useParams<{ visitId?: string }>();
   const [showNewVisit, setShowNewVisit] = useState(false);
   const [showDeletePatient, setShowDeletePatient] = useState(false);
   const [deletingPatient, setDeletingPatient] = useState(false);
+  // Local override for the empty-patient case, where switching the tab cannot
+  // change the URL (no visit to navigate to). For the normal case, the URL alone
+  // drives the active tab so deep links + browser back/forward keep working.
+  const [tabOverride, setTabOverride] = useState<"dashboard" | "visits" | null>(null);
   const selectedVisit = patient.visits.find((v) => v.id === selectedVisitId) || patient.visits[0];
+
+  const activeTab: "dashboard" | "visits" =
+    tabOverride ?? (params.visitId ? "visits" : "dashboard");
+
+  const handleTabChange = (next: string) => {
+    if (next !== "dashboard" && next !== "visits") return;
+    if (next === activeTab) return;
+    if (next === "dashboard") {
+      setTabOverride(null);
+      if (params.visitId) navigate(patientPath(patient.id));
+    } else {
+      const target = patient.visits[0]?.id;
+      if (target) {
+        setTabOverride(null);
+        navigate(patientVisitPath(patient.id, target));
+      } else {
+        setTabOverride("visits");
+      }
+    }
+  };
+
+  const handleOpenVisit = (visitId: string) => {
+    setTabOverride(null);
+    navigate(patientVisitPath(patient.id, visitId));
+  };
 
   if (showNewVisit) {
     return (
@@ -132,8 +180,7 @@ export function PatientView({
             <AlertDialogHeader>
               <AlertDialogTitle>Delete patient?</AlertDialogTitle>
               <AlertDialogDescription>
-                This will permanently remove {patient.name} (ref. {patient.uiId}) and all visits. This cannot be
-                undone.
+                Deletes {patient.name} (ref. {patient.uiId}) and all visits — can’t be undone.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
@@ -169,33 +216,72 @@ export function PatientView({
         </AlertDialog>
       )}
 
-      {/* Content */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Timeline */}
-        <div className="lg:col-span-1">
-          <VisitTimeline
-            visits={patient.visits}
-            selectedVisitId={selectedVisitId}
-            onSelectVisit={onSelectVisit}
-            onDeleteVisit={onDeleteVisit}
-          />
-        </div>
+      <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
+        <TabsList className="mb-4">
+          <TabsTrigger value="dashboard" className="gap-1.5">
+            <LayoutDashboard className="h-4 w-4" />
+            Dashboard
+          </TabsTrigger>
+          <TabsTrigger value="visits" className="gap-1.5">
+            <ListTree className="h-4 w-4" />
+            Visits
+            {patient.visits.length > 0 && (
+              <span className="ml-1 text-[10px] font-semibold text-muted-foreground">
+                {patient.visits.length}
+              </span>
+            )}
+          </TabsTrigger>
+        </TabsList>
 
-        {/* Details */}
-        <div className="lg:col-span-2">
-          {selectedVisit && (
-            <VisitDetails
-              visit={selectedVisit}
-              visitLabReports={labReportsForVisit(selectedVisit, patient.labReports)}
-              patientId={patient.id}
-              onUpdateSoap={async (soap) => onUpdateSoap(selectedVisit.id, soap)}
-              onSaveVisit={(patch) => onSaveVisit(selectedVisit.id, patch)}
-              onRegenerateSoap={(t) => onRegenerateSoap(selectedVisit.id, t)}
-              onSelectVisit={onSelectVisit}
-            />
+        <TabsContent value="dashboard" className="mt-0">
+          <PatientDashboard
+            patient={patient}
+            onOpenVisit={handleOpenVisit}
+            onNewVisit={() => setShowNewVisit(true)}
+            onSaveHealthProfile={onSaveHealthProfile}
+          />
+        </TabsContent>
+
+        <TabsContent value="visits" className="mt-0">
+          {patient.visits.length === 0 ? (
+            <div className="bg-card rounded-2xl border border-border card-shadow p-8 text-center">
+              <p className="text-sm text-muted-foreground mb-4">
+                No visits recorded yet for this patient.
+              </p>
+              <Button onClick={() => setShowNewVisit(true)} size="sm">
+                <Plus className="h-4 w-4 mr-1" /> Add first visit
+              </Button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <div className="lg:col-span-1">
+                <VisitTimeline
+                  visits={patient.visits}
+                  selectedVisitId={selectedVisitId}
+                  onSelectVisit={onSelectVisit}
+                  onDeleteVisit={onDeleteVisit}
+                />
+              </div>
+              <div className="lg:col-span-2">
+                {selectedVisit && (
+                  <VisitDetails
+                    visit={selectedVisit}
+                    visitLabReports={labReportsForVisit(selectedVisit, patient.labReports)}
+                    patientId={patient.id}
+                    onUpdateSoap={async (soap) => onUpdateSoap(selectedVisit.id, soap)}
+                    onSaveVisit={(patch) => onSaveVisit(selectedVisit.id, patch)}
+                    onRegenerateSoap={(t) => onRegenerateSoap(selectedVisit.id, t)}
+                    onRefreshAiReminders={() => onRefreshAiReminders(selectedVisit.id)}
+                    onHydratePrescriptions={() => onHydratePrescriptions(selectedVisit.id)}
+                    onSelectVisit={onSelectVisit}
+                    onUpdateLabReportDetails={onUpdateLabReportDetails}
+                  />
+                )}
+              </div>
+            </div>
           )}
-        </div>
-      </div>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

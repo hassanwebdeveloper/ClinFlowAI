@@ -66,7 +66,7 @@ export function ClinicList({
             <span className="text-2xl font-bold tracking-tight text-foreground">{APP_NAME}</span>
           </div>
           <p className="max-w-md text-sm text-muted-foreground">
-            Choose a clinic after you add one — patient lists and visits are scoped per clinic.
+            Patients and visits are per clinic — pick one after you create it.
           </p>
         </div>
         <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-5">

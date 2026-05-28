@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Visit, LabReportRecord } from "@/hooks/usePatientStore";
-import type { ApiAiSuggestion, VisitPatchPayload } from "@/lib/api";
-import { fetchAiSuggestionsApi, openStoredLabFileInNewTab } from "@/lib/api";
+import type { VisitPatchPayload } from "@/lib/api";
+import { openStoredLabFileInNewTab } from "@/lib/api";
 import type { LucideIcon } from "lucide-react";
 import {
   FileText,
@@ -10,7 +10,7 @@ import {
   Mic,
   Sparkles,
   Loader2,
-  Lightbulb,
+  BellRing,
   RefreshCw,
   ExternalLink,
   FlaskConical,
@@ -24,6 +24,9 @@ import { Label } from "@/components/ui/label";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { toast } from "sonner";
 
+/** Coalesce concurrent prescription hydrate for the same visit (e.g. React StrictMode). */
+const hydrateRxInflight = new Map<string, Promise<void>>();
+
 interface VisitDetailsProps {
   visit: Visit;
   /** Lab files saved for this visit (same collapsible style as new visit). */
@@ -32,7 +35,12 @@ interface VisitDetailsProps {
   onUpdateSoap: (soap: Visit["soap"]) => Promise<void>;
   onSaveVisit: (patch: VisitPatchPayload) => Promise<void>;
   onRegenerateSoap: (transcript: string) => Promise<void>;
+  onRefreshAiReminders: () => Promise<void>;
+  /** Backfill structured prescriptions + dosing from transcript for legacy visits (once per open). */
+  onHydratePrescriptions?: () => Promise<void>;
   onSelectVisit: (visitId: string) => void;
+  /** Persist a doctor edit to a single lab report's extracted text. */
+  onUpdateLabReportDetails: (labReportId: string, details: string) => Promise<unknown>;
 }
 
 const soapLabels = [
@@ -53,6 +61,50 @@ function linesToList(text: string): string[] {
 
 function listToLines(items: string[]): string {
   return items.join("\n");
+}
+
+/** Edit buffer: one line per medicine; optional dosage and frequency after ` | `. */
+function prescriptionsToMedicinesLines(
+  rx: { medicine: string; dosage?: string; frequency?: string }[],
+): string {
+  const rows = (rx ?? []).filter((r) => (r.medicine ?? "").trim());
+  if (!rows.length) return "";
+  return rows
+    .map((r) => {
+      const m = r.medicine.trim();
+      const d = (r.dosage ?? "").trim();
+      const f = (r.frequency ?? "").trim();
+      if (!d && !f) return m;
+      return `${m} | ${d} | ${f}`;
+    })
+    .join("\n");
+}
+
+function medicinesLinesFromVisit(visit: Visit): string {
+  const hasRx = visit.prescriptions?.some((r) => (r.medicine ?? "").trim());
+  if (hasRx) return prescriptionsToMedicinesLines(visit.prescriptions);
+  return listToLines(visit.prescribedMedicines);
+}
+
+function parseMedicinesLines(text: string): {
+  prescriptions: { medicine: string; dosage: string; frequency: string }[];
+  prescribed_medicines: string[];
+} {
+  const prescriptions: { medicine: string; dosage: string; frequency: string }[] = [];
+  for (const line of linesToList(text)) {
+    const parts = line.split("|").map((s) => s.trim());
+    const medicine = parts[0] ?? "";
+    if (!medicine) continue;
+    prescriptions.push({
+      medicine,
+      dosage: parts[1] ?? "",
+      frequency: parts[2] ?? "",
+    });
+  }
+  return {
+    prescriptions,
+    prescribed_medicines: prescriptions.map((p) => p.medicine),
+  };
 }
 
 function ReadonlyBlock({ text, emptyLabel }: { text: string; emptyLabel?: string }) {
@@ -83,6 +135,19 @@ function ReadonlyLineList({ linesText, emptyLabel }: { linesText: string; emptyL
       ))}
     </ul>
   );
+}
+
+function reminderGapCategoryLabel(category: string): string {
+  switch (category) {
+    case "medicine_dosage":
+      return "Medicine dosing";
+    case "lab_discussed_no_value":
+      return "Lab without values";
+    case "allergy_incomplete":
+      return "Allergy detail";
+    default:
+      return category.replace(/_/g, " ");
+  }
 }
 
 function VisitSectionCollapsible({
@@ -137,7 +202,10 @@ export function VisitDetails({
   onUpdateSoap,
   onSaveVisit,
   onRegenerateSoap,
+  onRefreshAiReminders,
+  onHydratePrescriptions,
   onSelectVisit,
+  onUpdateLabReportDetails,
 }: VisitDetailsProps) {
   const [editingSoap, setEditingSoap] = useState<Record<string, boolean>>({});
   const [soapValues, setSoapValues] = useState(visit.soap);
@@ -150,7 +218,7 @@ export function VisitDetails({
   const [duration, setDuration] = useState(visit.duration);
   const [historyText, setHistoryText] = useState(listToLines(visit.medicalHistory));
   const [allergiesText, setAllergiesText] = useState(listToLines(visit.allergies));
-  const [medicinesText, setMedicinesText] = useState(listToLines(visit.prescribedMedicines));
+  const [medicinesText, setMedicinesText] = useState(() => medicinesLinesFromVisit(visit));
   const [labTestsText, setLabTestsText] = useState(listToLines(visit.prescribedLabTests));
 
   const [editingMeta, setEditingMeta] = useState<Record<string, boolean>>({});
@@ -158,32 +226,109 @@ export function VisitDetails({
 
   const [regenerating, setRegenerating] = useState(false);
 
-  const [suggestions, setSuggestions] = useState<ApiAiSuggestion[]>([]);
-  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [loadingReminders, setLoadingReminders] = useState(false);
+
+  /** Per-lab-report editable copy of `details`, keyed by lab report id. */
+  const [labDetailsDraft, setLabDetailsDraft] = useState<Record<string, string>>(() =>
+    Object.fromEntries(visitLabReports.map((lr) => [lr.id, lr.details ?? ""])),
+  );
 
   /** Last transcript value we treat as “already regenerated” / initial for this visit. */
   const regenerateBaselineTranscriptRef = useRef(visit.transcript ?? "");
+
+  /** Successful POST hydrate-prescriptions calls per `patientId:visitId` this session. */
+  const hydrateRxDoneRef = useRef(new Set<string>());
 
   useEffect(() => {
     regenerateBaselineTranscriptRef.current = visit.transcript ?? "";
   }, [visit.id]);
 
-  const fetchSuggestions = useCallback(async () => {
-    if (!patientId || !visit.id) return;
-    setLoadingSuggestions(true);
-    try {
-      const resp = await fetchAiSuggestionsApi(patientId, visit.id);
-      setSuggestions(resp.suggestions);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Could not load AI suggestions");
-    } finally {
-      setLoadingSuggestions(false);
-    }
-  }, [patientId, visit.id]);
+  // Re-seed per-report drafts whenever the visit changes or upstream lab data
+  // updates (e.g. after a successful regenerate / new visit selection).
+  useEffect(() => {
+    setLabDetailsDraft(
+      Object.fromEntries(visitLabReports.map((lr) => [lr.id, lr.details ?? ""])),
+    );
+  }, [visit.id, visitLabReports]);
+
+  const handleRefreshAiReminders = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      if (!patientId || !visit.id) return;
+      setLoadingReminders(true);
+      try {
+        await onRefreshAiReminders();
+        if (!opts?.silent) {
+          toast.success("Reminders updated");
+        }
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Could not refresh AI reminders");
+      } finally {
+        setLoadingReminders(false);
+      }
+    },
+    [patientId, visit.id, onRefreshAiReminders],
+  );
 
   useEffect(() => {
-    setSuggestions([]);
-  }, [visit.id]);
+    if (!onHydratePrescriptions || !patientId || !visit.id) return;
+    const tx = (visit.transcript ?? "").trim();
+    if (!tx) return;
+    const rx = visit.prescriptions ?? [];
+    const hasStructuredDetail = rx.some(
+      (r) => (r.dosage ?? "").trim() || (r.frequency ?? "").trim(),
+    );
+    if (hasStructuredDetail) return;
+
+    const hasMedNames =
+      (visit.prescribedMedicines ?? []).length > 0 ||
+      rx.some((r) => (r.medicine ?? "").trim());
+    if (!hasMedNames) return;
+
+    const dedupeKey = `${patientId}:${visit.id}`;
+    if (hydrateRxDoneRef.current.has(dedupeKey)) return;
+
+    const inflight = hydrateRxInflight.get(dedupeKey);
+    if (inflight) {
+      void inflight;
+      return;
+    }
+
+    const run = (async () => {
+      try {
+        await onHydratePrescriptions();
+        hydrateRxDoneRef.current.add(dedupeKey);
+      } catch {
+        /* allow retry when navigating away and back */
+      } finally {
+        hydrateRxInflight.delete(dedupeKey);
+      }
+    })();
+    hydrateRxInflight.set(dedupeKey, run);
+    void run;
+  }, [
+    patientId,
+    visit.id,
+    visit.transcript,
+    JSON.stringify(visit.prescriptions),
+    JSON.stringify(visit.prescribedMedicines),
+    onHydratePrescriptions,
+  ]);
+
+  useEffect(() => {
+    const tx = (visit.transcript ?? "").trim();
+    if (!visit.aiRemindersPending || !tx) return;
+    void handleRefreshAiReminders({ silent: true });
+  }, [visit.id, visit.aiRemindersPending, visit.transcript, handleRefreshAiReminders]);
+
+  const hasReminderContent = useMemo(() => {
+    const r = visit.aiReminders;
+    if (!r) return false;
+    return (
+      r.similarVisits.length > 0 ||
+      r.documentationGaps.length > 0 ||
+      r.repeatLabReminders.length > 0
+    );
+  }, [visit.aiReminders]);
 
   useEffect(() => {
     setSoapValues(visit.soap);
@@ -198,7 +343,7 @@ export function VisitDetails({
     setDuration(visit.duration);
     setHistoryText(listToLines(visit.medicalHistory));
     setAllergiesText(listToLines(visit.allergies));
-    setMedicinesText(listToLines(visit.prescribedMedicines));
+    setMedicinesText(medicinesLinesFromVisit(visit));
     setLabTestsText(listToLines(visit.prescribedLabTests));
   }, [
     visit.id,
@@ -210,6 +355,7 @@ export function VisitDetails({
     JSON.stringify(visit.symptoms),
     JSON.stringify(visit.medicalHistory),
     JSON.stringify(visit.allergies),
+    JSON.stringify(visit.prescriptions),
     JSON.stringify(visit.prescribedMedicines),
     JSON.stringify(visit.prescribedLabTests),
   ]);
@@ -218,8 +364,22 @@ export function VisitDetails({
   const hasUnsavedTranscript = transcript !== savedTranscript;
   const transcriptSavedAndChangedFromBaseline =
     !hasUnsavedTranscript && savedTranscript !== regenerateBaselineTranscriptRef.current;
+
+  /** Lab reports whose draft `details` differ from the stored `details`. */
+  const dirtyLabReports = useMemo(() => {
+    return visitLabReports.filter((lr) => {
+      const draft = labDetailsDraft[lr.id];
+      if (draft === undefined) return false;
+      return draft !== (lr.details ?? "");
+    });
+  }, [visitLabReports, labDetailsDraft]);
+
+  const hasLabDetailEdits = dirtyLabReports.length > 0;
+
   const canRegenerateStructuredNotes =
-    Boolean(transcript.trim()) && transcriptSavedAndChangedFromBaseline;
+    Boolean(transcript.trim()) &&
+    !hasUnsavedTranscript &&
+    (transcriptSavedAndChangedFromBaseline || hasLabDetailEdits);
 
   const handleRegenerate = async () => {
     if (!transcript.trim()) {
@@ -230,12 +390,17 @@ export function VisitDetails({
       toast.error("Save the transcript first (Save on the Transcript field)");
       return;
     }
-    if (!transcriptSavedAndChangedFromBaseline) {
-      toast.error("Save a transcript change first; it must differ from the last saved version before regenerating");
+    if (!transcriptSavedAndChangedFromBaseline && !hasLabDetailEdits) {
+      toast.error("Save a changed transcript or edit a lab report detail first.");
       return;
     }
     setRegenerating(true);
     try {
+      // Persist lab report edits first so the backend rebuilds visit context
+      // from the latest stored details before regenerating SOAP.
+      for (const lr of dirtyLabReports) {
+        await onUpdateLabReportDetails(lr.id, labDetailsDraft[lr.id] ?? "");
+      }
       await onSaveVisit({
         transcript,
         visit_title: visitTitle,
@@ -246,13 +411,12 @@ export function VisitDetails({
         duration,
         medical_history: linesToList(historyText),
         allergies: linesToList(allergiesText),
-        prescribed_medicines: linesToList(medicinesText),
+        ...parseMedicinesLines(medicinesText),
         prescribed_lab_tests: linesToList(labTestsText),
       });
       await onRegenerateSoap(transcript);
       regenerateBaselineTranscriptRef.current = transcript;
-      toast.success("Saved and regenerated structured notes");
-      fetchSuggestions();
+      toast.success("Visit saved — notes rebuilt");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Regeneration failed");
     } finally {
@@ -315,7 +479,7 @@ export function VisitDetails({
               : key === "allergies"
                 ? { allergies: linesToList(allergiesText) }
                 : key === "medicines"
-                  ? { prescribed_medicines: linesToList(medicinesText) }
+                  ? parseMedicinesLines(medicinesText)
                   : { prescribed_lab_tests: linesToList(labTestsText) };
       await onSaveVisit(patch);
       setEditingExtra((prev) => ({ ...prev, [key]: false }));
@@ -330,7 +494,7 @@ export function VisitDetails({
     if (key === "duration") setDuration(visit.duration);
     if (key === "history") setHistoryText(listToLines(visit.medicalHistory));
     if (key === "allergies") setAllergiesText(listToLines(visit.allergies));
-    if (key === "medicines") setMedicinesText(listToLines(visit.prescribedMedicines));
+    if (key === "medicines") setMedicinesText(medicinesLinesFromVisit(visit));
     if (key === "labTests") setLabTestsText(listToLines(visit.prescribedLabTests));
     setEditingExtra((prev) => ({ ...prev, [key]: false }));
   };
@@ -381,166 +545,10 @@ export function VisitDetails({
         </div>
       </VisitSectionCollapsible>
 
-      {visitLabReports.length > 0 && (
-        <VisitSectionCollapsible
-          title="Lab reports"
-          icon={FlaskConical}
-          badge={
-            <span className="text-xs text-muted-foreground font-normal">({visitLabReports.length})</span>
-          }
-        >
-          <p className="text-xs text-muted-foreground mb-4">
-            Files uploaded for this visit. Open a report to view extracted text.
-          </p>
-          <div className="space-y-3">
-            {visitLabReports.map((lr, idx) => (
-              <Collapsible
-                key={lr.id || `${lr.filename}-${idx}`}
-                className="group/labrow rounded-xl border border-border bg-accent/20 overflow-hidden"
-              >
-                <CollapsibleTrigger asChild>
-                  <button
-                    type="button"
-                    className="flex w-full items-start gap-2 px-3 py-2.5 text-left border-b border-border/80 bg-accent/30 hover:bg-accent/40 transition-colors"
-                  >
-                    <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground mt-0.5 transition-transform duration-200 group-data-[state=open]/labrow:rotate-180" />
-                    <FileText className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-foreground truncate" title={lr.filename}>
-                        {idx + 1}. {lr.testName?.trim() ? lr.testName : lr.filename}
-                      </p>
-                      {lr.testName?.trim() && (
-                        <p className="text-xs text-muted-foreground truncate mt-0.5" title={lr.filename}>
-                          {lr.filename}
-                        </p>
-                      )}
-                      <p className="text-[10px] uppercase text-muted-foreground mt-1">
-                        {lr.extractionMethod === "vl" ? "vision" : "text"}
-                      </p>
-                    </div>
-                  </button>
-                </CollapsibleTrigger>
-                <CollapsibleContent>
-                  <div className="px-3 py-3 space-y-3 border-t border-border/60 bg-accent/10">
-                    {(() => {
-                      const urls = [lr.fileUrl, ...(lr.extraFileUrls ?? [])].filter((u): u is string =>
-                        Boolean(u?.trim())
-                      );
-                      if (!urls.length) return null;
-                      return (
-                        <div className="flex flex-wrap gap-2">
-                          {urls.map((u, i) => (
-                            <button
-                              key={`${u}-${i}`}
-                              type="button"
-                              onClick={() => {
-                                void openStoredLabFileInNewTab(u).catch((e) =>
-                                  toast.error(e instanceof Error ? e.message : "Could not open file")
-                                );
-                              }}
-                              className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
-                            >
-                              <ExternalLink className="h-3.5 w-3.5" />
-                              {urls.length > 1 ? `Open photo ${i + 1}` : "Open uploaded file"}
-                            </button>
-                          ))}
-                        </div>
-                      );
-                    })()}
-                    {lr.details?.trim() ? (
-                      <textarea
-                        readOnly
-                        value={lr.details}
-                        className="w-full min-h-[140px] max-h-[320px] text-xs font-mono bg-muted/40 rounded-lg p-3 border border-border text-foreground leading-relaxed resize-y"
-                      />
-                    ) : (
-                      <p className="text-xs text-muted-foreground">No extracted text stored.</p>
-                    )}
-                  </div>
-                </CollapsibleContent>
-              </Collapsible>
-            ))}
-          </div>
-        </VisitSectionCollapsible>
-      )}
-
-      <VisitSectionCollapsible
-        title="AI Suggestions"
-        icon={Lightbulb}
-        iconClassName="text-amber-500"
-        headerRight={
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={loadingSuggestions || !(visit.transcript?.trim())}
-            onClick={(e) => {
-              e.stopPropagation();
-              void fetchSuggestions();
-            }}
-          >
-            {loadingSuggestions ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
-            ) : (
-              <RefreshCw className="h-3.5 w-3.5 mr-1" />
-            )}
-            {loadingSuggestions ? "Analysing..." : "Refresh Suggestions"}
-          </Button>
-        }
-      >
-        {loadingSuggestions && suggestions.length === 0 && (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground py-6 justify-center">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Analysing visit history...
-          </div>
-        )}
-
-        {!loadingSuggestions && suggestions.length === 0 && (
-          <p className="text-sm text-muted-foreground italic py-4 text-center">
-            No suggestions yet — regenerate structured notes or click Refresh to generate.
-          </p>
-        )}
-
-        {suggestions.length > 0 && (
-          <div className="space-y-3">
-            {suggestions.map((s, idx) => (
-              <div
-                key={idx}
-                className="bg-amber-50/60 dark:bg-amber-950/20 border border-amber-200/60 dark:border-amber-800/40 rounded-xl p-4"
-              >
-                <p className="text-sm text-foreground leading-relaxed">{s.suggestion}</p>
-                {s.references.length > 0 && (
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {s.references.map((ref, ri) => (
-                      <button
-                        key={ri}
-                        type="button"
-                        onClick={() => onSelectVisit(ref.visit_id)}
-                        className="inline-flex items-center gap-1 text-xs bg-background border border-border rounded-lg px-2.5 py-1.5 hover:bg-accent transition-colors text-left"
-                        title={ref.relevance_snippet}
-                      >
-                        <ExternalLink className="h-3 w-3 text-primary shrink-0" />
-                        <span className="font-medium text-primary">{ref.visit_title || "Visit"}</span>
-                        {ref.visit_date && (
-                          <span className="text-muted-foreground">· {ref.visit_date}</span>
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </VisitSectionCollapsible>
-
       <VisitSectionCollapsible title="Additional information" icon={ClipboardList}>
         <p className="text-xs text-muted-foreground mb-4">
-          Symptoms, duration, relevant history, and allergies from the transcript.{" "}
-          <span className="font-medium text-foreground/80">
-            Prescribed medicines and ordered labs or imaging are extracted from the doctor&apos;s speech only
-          </span>{" "}
-          (not from uploaded lab result documents).
+          From the transcript. <span className="font-medium text-foreground/80">Meds and ordered tests</span> come from
+          speech only — not from uploaded lab PDFs.
         </p>
         <div className="space-y-4">
           <div>
@@ -656,7 +664,10 @@ export function VisitDetails({
 
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <Label className="text-xs">Prescribed medicines (from transcript)</Label>
+              <div className="flex items-center gap-2 min-w-0">
+                <Pill className="h-3.5 w-3.5 text-primary shrink-0" aria-hidden />
+                <Label className="text-xs">Prescribed medicines (from transcript)</Label>
+              </div>
               {!editingExtra.medicines && penBtn(() => setEditingExtra((p) => ({ ...p, medicines: true })))}
             </div>
             {editingExtra.medicines ? (
@@ -664,7 +675,7 @@ export function VisitDetails({
                 <textarea
                   value={medicinesText}
                   onChange={(e) => setMedicinesText(e.target.value)}
-                  placeholder="One medicine per line (as stated in the transcript)"
+                  placeholder='One line per medicine. Optional: Medicine | dosage | frequency (e.g. Amoxicillin | 500 mg | three times daily)'
                   rows={3}
                   className="w-full text-sm bg-accent/30 rounded-xl p-3 border border-border focus:outline-none focus:ring-2 focus:ring-primary/20 resize-none text-foreground"
                 />
@@ -677,6 +688,21 @@ export function VisitDetails({
                   </Button>
                 </div>
               </div>
+            ) : (visit.prescriptions ?? []).some((r) => (r.medicine ?? "").trim()) ? (
+              <ul className="space-y-2 rounded-lg bg-muted/30 border border-border/60 px-3 py-2 min-h-[2.5rem] list-none">
+                {(visit.prescriptions ?? [])
+                  .filter((r) => (r.medicine ?? "").trim())
+                  .map((rx, i) => (
+                    <li key={`${rx.medicine}-${i}`} className="bg-accent/50 rounded-xl p-3">
+                      <p className="text-sm font-medium text-foreground">{rx.medicine.trim()}</p>
+                      {(rx.dosage?.trim() || rx.frequency?.trim()) ? (
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          {[rx.dosage, rx.frequency].filter((x) => (x ?? "").trim()).join(" · ")}
+                        </p>
+                      ) : null}
+                    </li>
+                  ))}
+              </ul>
             ) : (
               <ReadonlyLineList linesText={medicinesText} emptyLabel="None mentioned in transcript" />
             )}
@@ -784,7 +810,7 @@ export function VisitDetails({
                 penBtn(() => setEditingMeta((p) => ({ ...p, summaryReport: true })))}
             </div>
             <p className="text-xs text-muted-foreground mb-1.5">
-              Short narrative with patient demographics and visit gist (generated with structured notes; editable).
+              Short visit narrative (auto-filled with notes; you can edit).
             </p>
             {editingMeta.summaryReport ? (
               <div className="space-y-2">
@@ -806,7 +832,7 @@ export function VisitDetails({
                 </div>
               </div>
             ) : (
-              <ReadonlyBlock text={summaryReport} emptyLabel="Regenerate structured notes to generate this report" />
+              <ReadonlyBlock text={summaryReport} emptyLabel="Run Regenerate structured notes to fill this" />
             )}
           </div>
 
@@ -841,8 +867,258 @@ export function VisitDetails({
             )}
           </div>
         </div>
+      </VisitSectionCollapsible>
 
-        <div className="mt-4 pt-4 border-t border-border">
+      <VisitSectionCollapsible
+        title="AI Reminders"
+        icon={BellRing}
+        iconClassName="text-sky-600 dark:text-sky-400"
+        headerRight={
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={loadingReminders || !(visit.transcript?.trim())}
+            onClick={(e) => {
+              e.stopPropagation();
+              void handleRefreshAiReminders();
+            }}
+          >
+            {loadingReminders ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />
+            ) : (
+              <RefreshCw className="h-3.5 w-3.5 mr-1" />
+            )}
+            {loadingReminders ? "Generating…" : "Refresh reminders"}
+          </Button>
+        }
+      >
+        {loadingReminders && (
+          <div className="flex flex-col items-center gap-2 text-sm text-muted-foreground py-8 px-4 text-center">
+            <Loader2 className="h-6 w-6 animate-spin text-primary" />
+            <p className="font-medium text-foreground">Generating AI reminders</p>
+            <p className="text-xs max-w-sm leading-relaxed">
+              Finding similar past visits, checking documentation, and lab follow-up — usually a few seconds.
+            </p>
+          </div>
+        )}
+
+        {!loadingReminders && !visit.aiReminders && (
+          <p className="text-sm text-muted-foreground italic py-4 text-center">
+            {visit.aiRemindersPending && !(visit.transcript ?? "").trim()
+              ? "Add a transcript to generate reminders."
+              : "New visits load reminders when you open them. Use Refresh after Regenerate SOAP if needed."}
+          </p>
+        )}
+
+        {!loadingReminders && visit.aiReminders && !hasReminderContent && (
+          <p className="text-sm text-muted-foreground italic py-4 text-center">
+            Nothing flagged. Try Refresh if you changed the transcript or labs.
+          </p>
+        )}
+
+        {!loadingReminders && visit.aiReminders && hasReminderContent && (
+          <div className="space-y-6">
+            {visit.aiReminders.similarVisits.length > 0 && (
+              <div>
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                  Similar previous visits
+                </h4>
+                <div className="flex flex-wrap gap-2">
+                  {visit.aiReminders.similarVisits.map((sv) => (
+                    <button
+                      key={sv.visitId}
+                      type="button"
+                      onClick={() => onSelectVisit(sv.visitId)}
+                      className="inline-flex items-center gap-1 text-xs bg-sky-50/80 dark:bg-sky-950/30 border border-sky-200/70 dark:border-sky-900/40 rounded-lg px-2.5 py-1.5 hover:bg-accent transition-colors text-left"
+                      title={sv.similarity > 0 ? `Similarity ${(sv.similarity * 100).toFixed(1)}%` : undefined}
+                    >
+                      <ExternalLink className="h-3 w-3 text-primary shrink-0" />
+                      <span className="font-medium text-primary">{sv.visitTitle || "Visit"}</span>
+                      {sv.visitDate && <span className="text-muted-foreground">· {sv.visitDate}</span>}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {visit.aiReminders.documentationGaps.length > 0 && (
+              <div>
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                  Possible documentation gaps
+                </h4>
+                <ul className="space-y-2">
+                  {visit.aiReminders.documentationGaps.map((g, i) => (
+                    <li
+                      key={`${g.category}-${i}`}
+                      className="rounded-xl border border-amber-200/60 dark:border-amber-800/35 bg-amber-50/50 dark:bg-amber-950/20 px-4 py-3 text-sm leading-relaxed"
+                    >
+                      <span className="text-[11px] font-medium uppercase tracking-wide text-amber-800/90 dark:text-amber-200/85 mr-2">
+                        {reminderGapCategoryLabel(g.category)}
+                      </span>
+                      {g.message}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {visit.aiReminders.repeatLabReminders.length > 0 && (
+              <div>
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                  Consider repeating labs
+                </h4>
+                <ul className="space-y-2">
+                  {visit.aiReminders.repeatLabReminders.map((rl, i) => (
+                    <li
+                      key={`${rl.testName}-${i}`}
+                      className="rounded-xl border border-border bg-muted/20 px-4 py-3 text-sm"
+                    >
+                      <span className="font-medium text-foreground">{rl.testName}</span>
+                      <p className="text-muted-foreground mt-1 leading-relaxed">{rl.rationale}</p>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {visit.aiReminders.generatedAt && (
+              <p className="text-[11px] text-muted-foreground text-center pt-1">
+                Generated {new Date(visit.aiReminders.generatedAt).toLocaleString(undefined, {
+                  dateStyle: "medium",
+                  timeStyle: "short",
+                })}
+              </p>
+            )}
+          </div>
+        )}
+      </VisitSectionCollapsible>
+
+      {visitLabReports.length > 0 && (
+        <VisitSectionCollapsible
+          title="Lab reports"
+          icon={FlaskConical}
+          badge={
+            <span className="text-xs text-muted-foreground font-normal">({visitLabReports.length})</span>
+          }
+        >
+          <p className="text-xs text-muted-foreground mb-4">
+            Uploaded or spoken-in labs. Edit extracted text if needed, then use{" "}
+            <span className="font-medium text-foreground">Regenerate structured notes</span> below.
+          </p>
+          <div className="space-y-3">
+            {visitLabReports.map((lr, idx) => (
+              <Collapsible
+                key={lr.id || `${lr.filename}-${idx}`}
+                className="group/labrow rounded-xl border border-border bg-accent/20 overflow-hidden"
+              >
+                <CollapsibleTrigger asChild>
+                  <button
+                    type="button"
+                    className="flex w-full items-start gap-2 px-3 py-2.5 text-left border-b border-border/80 bg-accent/30 hover:bg-accent/40 transition-colors"
+                  >
+                    <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground mt-0.5 transition-transform duration-200 group-data-[state=open]/labrow:rotate-180" />
+                    <FileText className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-foreground truncate" title={lr.filename || lr.testName}>
+                        {idx + 1}. {lr.testName?.trim() ? lr.testName : lr.filename || "Lab result"}
+                      </p>
+                      {lr.testName?.trim() && lr.filename ? (
+                        <p className="text-xs text-muted-foreground truncate mt-0.5" title={lr.filename}>
+                          {lr.filename}
+                        </p>
+                      ) : lr.extractionMethod === "transcript" ? (
+                        <p className="text-xs italic text-muted-foreground mt-0.5">
+                          From visit transcript
+                        </p>
+                      ) : null}
+                      <p className="text-[10px] uppercase text-muted-foreground mt-1">
+                        {lr.extractionMethod === "vl"
+                          ? "vision"
+                          : lr.extractionMethod === "transcript"
+                          ? "transcript"
+                          : "text"}
+                      </p>
+                    </div>
+                  </button>
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <div className="px-3 py-3 space-y-3 border-t border-border/60 bg-accent/10">
+                    {(() => {
+                      const urls = [lr.fileUrl, ...(lr.extraFileUrls ?? [])].filter((u): u is string =>
+                        Boolean(u?.trim())
+                      );
+                      if (!urls.length) return null;
+                      return (
+                        <div className="flex flex-wrap gap-2">
+                          {urls.map((u, i) => (
+                            <button
+                              key={`${u}-${i}`}
+                              type="button"
+                              onClick={() => {
+                                void openStoredLabFileInNewTab(u).catch((e) =>
+                                  toast.error(e instanceof Error ? e.message : "Could not open file")
+                                );
+                              }}
+                              className="inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" />
+                              {urls.length > 1 ? `Open photo ${i + 1}` : "Open uploaded file"}
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                    {(() => {
+                      const draft = labDetailsDraft[lr.id] ?? lr.details ?? "";
+                      const original = lr.details ?? "";
+                      const dirty = draft !== original;
+                      return (
+                        <div className="space-y-1.5">
+                          <textarea
+                            value={draft}
+                            onChange={(e) =>
+                              setLabDetailsDraft((prev) => ({ ...prev, [lr.id]: e.target.value }))
+                            }
+                            placeholder="Extracted lab text — edit if needed"
+                            className={cn(
+                              "w-full min-h-[140px] max-h-[320px] text-xs font-mono bg-muted/40 rounded-lg p-3 border text-foreground leading-relaxed resize-y focus:outline-none focus:ring-2 focus:ring-primary/20",
+                              dirty
+                                ? "border-warning/60 focus:ring-warning/30"
+                                : "border-border",
+                            )}
+                          />
+                          {dirty ? (
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[11px] text-warning">
+                                Unsaved changes — tap <span className="font-medium">Regenerate structured notes</span> below.
+                              </span>
+                              <button
+                                type="button"
+                                className="text-[11px] text-muted-foreground hover:text-foreground underline"
+                                onClick={() =>
+                                  setLabDetailsDraft((prev) => ({ ...prev, [lr.id]: original }))
+                                }
+                              >
+                                Reset
+                              </button>
+                            </div>
+                          ) : !original.trim() ? (
+                            <p className="text-[11px] text-muted-foreground">No text yet — you can type it in.</p>
+                          ) : null}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+            ))}
+          </div>
+        </VisitSectionCollapsible>
+      )}
+
+      <div className="bg-card rounded-2xl border border-border card-shadow p-5">
+        <div className="flex flex-wrap items-center gap-3">
           <Button
             type="button"
             size="sm"
@@ -856,35 +1132,13 @@ export function VisitDetails({
             )}
             Regenerate structured notes
           </Button>
-          <p className="text-xs text-muted-foreground mt-2">
-            Save the transcript when you change it (Save on Transcript). The button turns on only after a saved
-            transcript that differs from the previous saved one for this visit. Then this saves all visit summary
-            fields and regenerates SOAP, title, summary, medicines, labs, and related extraction
-            {visit.labReportDetails?.trim() ? " (lab document text for this visit is included automatically)." : "."}
-          </p>
         </div>
-      </VisitSectionCollapsible>
+        <p className="text-xs text-muted-foreground mt-2">
+          Unlocks when you save a changed transcript or edit a lab — then saves and rebuilds SOAP, summary, meds, and
+          orders.
+        </p>
+      </div>
 
-      {visit.prescriptions.length > 0 && (
-        <div className="bg-card rounded-2xl border border-border card-shadow p-5">
-          <div className="flex items-center gap-2 mb-4">
-            <Pill className="h-4 w-4 text-primary" />
-            <h3 className="font-semibold text-foreground text-sm">Prescriptions</h3>
-          </div>
-          <div className="space-y-2">
-            {visit.prescriptions.map((rx, i) => (
-              <div key={i} className="flex items-center gap-4 bg-accent/50 rounded-xl p-3">
-                <div className="flex-1">
-                  <p className="text-sm font-medium text-foreground">{rx.medicine}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {rx.dosage} · {rx.frequency}
-                  </p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

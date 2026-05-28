@@ -16,6 +16,8 @@ async def connect_to_mongodb():
         mongodb_client = AsyncIOMotorClient(settings.MONGODB_URL)
         db = mongodb_client[settings.MONGODB_DB_NAME]
         await db["doctors"].create_index("email", unique=True)
+        await db["access_requests"].create_index("token_hash", unique=True)
+        await db["access_requests"].create_index([("email", 1), ("status", 1)])
         await db["clinics"].create_index("doctor_id")
 
         patients = db["patients"]

@@ -88,10 +88,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signUp = useCallback(
     async (payload: DoctorSignupPayload) => {
-      const data = await signupDoctor(payload);
-      persistSession(data.access_token, userFromDto(data.user));
+      await signupDoctor(payload);
     },
-    [persistSession]
+    []
   );
 
   const signOut = useCallback(() => {

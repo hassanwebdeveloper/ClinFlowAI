@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     TOGETHER_API_KEY: str = ""
     TOGETHER_WHISPER_MODEL: str = "openai/whisper-large-v3"
     TOGETHER_LLM_MODEL: str = "Qwen/Qwen3-235B-A22B-Instruct-2507-tput"
-    TOGETHER_EMBEDDING_MODEL: str = "togethercomputer/m2-bert-80M-8k-retrieval"
+    TOGETHER_EMBEDDING_MODEL: str = "intfloat/multilingual-e5-large-instruct"
     # Vision-language model for scanned lab reports / photos (Together chat completions + image_url).
     TOGETHER_VL_MODEL: str = "Qwen/Qwen3.5-9B"
 
@@ -41,6 +41,18 @@ class Settings(BaseSettings):
 
     # Uploads
     UPLOAD_DIR: str = "uploads"
+
+    # SMTP (password reset emails)
+    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM: str = "ClinFlowAI <no-reply@clinflowai.com>"
+    SMTP_USE_TLS: bool = True
+    ACCESS_REQUEST_EMAIL: str = ""
+    ACCESS_REQUEST_REVIEW_BASE_URL: str = "/access-requests/review"
+    FRONTEND_BASE_URL: str = "http://localhost:5173"
+    PASSWORD_RESET_TOKEN_EXPIRE_SECONDS: int = 3600
 
     class Config:
         env_file = ".env"
