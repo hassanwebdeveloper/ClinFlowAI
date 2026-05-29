@@ -32,7 +32,11 @@ services:
 
     networks:
       - traefik-public
+      - shared-network
 
 networks:
   traefik-public:
+    external: true
+
+  shared-network:
     external: true
