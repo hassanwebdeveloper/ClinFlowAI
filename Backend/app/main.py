@@ -12,7 +12,7 @@ from app.core.database import close_mongodb_connection, connect_to_mongodb
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI):
+async def lifespan(app: FastAPI):
     await connect_to_mongodb()
     yield
     await close_mongodb_connection()
@@ -25,31 +25,47 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS middleware configuration
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with specific origins
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include API router
+# API routes
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
-# Mount the frontend dist directory (Vite build output)
-app.mount("/assets", StaticFiles(directory="../Frontend/dist/assets"), name="assets")
+# =========================
+# FRONTEND (REACT BUILD)
+# =========================
 
-# Serve uploaded audio files
-app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="uploads")
+# assets (JS/CSS)
+app.mount(
+    "/assets",
+    StaticFiles(directory="static/assets"),
+    name="assets"
+)
+
+# uploads
+app.mount(
+    "/uploads",
+    StaticFiles(directory=settings.UPLOAD_DIR),
+    name="uploads"
+)
+
 
 @app.get("/{full_path:path}")
 async def serve_frontend(full_path: str):
-    # Serve the frontend dist/index.html for all non-API routes
-    if not full_path.startswith("api/"):
-        frontend_path = "../Frontend/dist/index.html"
-        if os.path.exists(frontend_path):
-            return FileResponse(frontend_path)
-    
-    # If the path starts with api/, let it be handled by the API routes
-    return {"message": "Welcome to ClinFlow AI API"} 
+
+    # allow API routes to pass through
+    if full_path.startswith("api/"):
+        return {"message": "API route not found"}
+
+    index_path = "static/index.html"
+
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+
+    return {"error": "Frontend not built"}
