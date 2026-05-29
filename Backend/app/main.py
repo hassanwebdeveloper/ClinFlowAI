@@ -55,6 +55,13 @@ app.mount(
     name="uploads"
 )
 
+# landing images/videos
+app.mount(
+    "/landing",
+    StaticFiles(directory="static/landing"),
+    name="landing"
+)
+
 
 @app.get("/{full_path:path}")
 async def serve_frontend(full_path: str):
