@@ -9,7 +9,7 @@ services:
     restart: always
 
     env_file:
-      - .env
+      - ./Backend/.env
 
     volumes:
       # React build goes into FastAPI container
