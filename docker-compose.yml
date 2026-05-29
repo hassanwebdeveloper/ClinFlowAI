@@ -1,0 +1,38 @@
+services:
+
+  clinflowai:
+    build:
+      context: ./Backend
+
+    container_name: clinflowai
+
+    restart: always
+
+    env_file:
+      - .env
+
+    volumes:
+      # React build goes into FastAPI container
+      - ./Frontend/dist:/app/static
+
+      # uploads persistence
+      - ./Backend/uploads:/app/uploads
+
+    ports:
+      - "8001:8000"
+
+    labels:
+      - traefik.enable=true
+
+      - traefik.http.routers.clinflowai.rule=Host(`clinflowai.net`)
+      - traefik.http.routers.clinflowai.entrypoints=websecure
+      - traefik.http.routers.clinflowai.tls.certresolver=le
+
+      - traefik.http.services.clinflowai.loadbalancer.server.port=8000
+
+    networks:
+      - traefik-public
+
+networks:
+  traefik-public:
+    external: true
