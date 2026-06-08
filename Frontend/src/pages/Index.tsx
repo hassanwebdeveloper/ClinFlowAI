@@ -6,7 +6,6 @@ import { PatientList } from "@/components/PatientList";
 import { PatientView } from "@/components/PatientView";
 import { VisitsView } from "@/components/VisitsView";
 import { SearchView } from "@/components/SearchView";
-import { SettingsView } from "@/components/SettingsView";
 import { usePatientStore } from "@/hooks/usePatientStore";
 import { useClinicStore } from "@/hooks/useClinicStore";
 import { useAuth } from "@/hooks/useAuth";
@@ -71,7 +70,7 @@ const Index = () => {
   }, [location.pathname]);
 
   const showPatientDetail = Boolean(params.patientId);
-  const needsClinic = pathTab !== "clinics" && pathTab !== "settings" && !selectedClinicId;
+  const needsClinic = pathTab !== "clinics" && !selectedClinicId;
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -134,6 +133,10 @@ const Index = () => {
 
   if (!isAuthenticated) {
     return <Navigate to={signInPath()} replace />;
+  }
+
+  if (pathTab === "settings") {
+    return <Navigate to={patientsListPath()} replace />;
   }
 
   if (needsClinic && !clinicsLoading) {
@@ -246,7 +249,6 @@ const Index = () => {
         )}
         {pathTab === "visits" && <VisitsView patients={patients} />}
         {pathTab === "search" && <SearchView patients={patients} />}
-        {pathTab === "settings" && <SettingsView />}
       </main>
     </div>
   );

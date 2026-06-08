@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { UserPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,16 +20,29 @@ import { useToast } from "@/hooks/use-toast";
 
 interface AddPatientDialogProps {
   onAdd: (patient: { uiId: string; name: string; age: number; gender: string }) => Promise<void>;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  initialUiId?: string;
 }
 
-export function AddPatientDialog({ onAdd }: AddPatientDialogProps) {
-  const [open, setOpen] = useState(false);
+export function AddPatientDialog({ onAdd, open: openProp, onOpenChange, initialUiId }: AddPatientDialogProps) {
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = openProp ?? internalOpen;
+  const setOpen = onOpenChange ?? setInternalOpen;
   const [uiId, setUiId] = useState("");
   const [name, setName] = useState("");
   const [age, setAge] = useState("");
   const [gender, setGender] = useState("");
   const [saving, setSaving] = useState(false);
   const { toast } = useToast();
+
+  useEffect(() => {
+    if (!open) return;
+    setUiId(initialUiId?.trim() ?? "");
+    setName("");
+    setAge("");
+    setGender("");
+  }, [open, initialUiId]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

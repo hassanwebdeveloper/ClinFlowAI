@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { CalendarDays, Trash2, User } from "lucide-react";
+import { CalendarDays, Search, Trash2, User, UserPlus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Patient } from "@/hooks/usePatientStore";
 import { AddPatientDialog } from "@/components/AddPatientDialog";
@@ -16,6 +16,11 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { patientPath } from "@/lib/routes";
+import {
+  isSingleTokenQuery,
+  patientMatchesQuery,
+  patientUiIdMatchesQuery,
+} from "@/lib/patientSearch";
 
 interface PatientListProps {
   patients: Patient[];
@@ -26,8 +31,23 @@ interface PatientListProps {
 
 export function PatientList({ patients, selectedPatientId, onAddPatient, onDeletePatient }: PatientListProps) {
   const { toast } = useToast();
+  const [searchQuery, setSearchQuery] = useState("");
+  const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const [prefillUiId, setPrefillUiId] = useState("");
   const [pendingDelete, setPendingDelete] = useState<Patient | null>(null);
   const [deleting, setDeleting] = useState(false);
+
+  const trimmedQuery = searchQuery.trim();
+
+  const filteredPatients = useMemo(() => {
+    if (!trimmedQuery) return patients;
+    return patients.filter((patient) => patientMatchesQuery(patient, trimmedQuery));
+  }, [patients, trimmedQuery]);
+
+  const showAddByReferenceId = useMemo(() => {
+    if (!isSingleTokenQuery(searchQuery)) return false;
+    return !patients.some((patient) => patientUiIdMatchesQuery(patient, trimmedQuery));
+  }, [patients, searchQuery, trimmedQuery]);
 
   const runDelete = async () => {
     if (!pendingDelete) return;
@@ -46,14 +66,41 @@ export function PatientList({ patients, selectedPatientId, onAddPatient, onDelet
     }
   };
 
+  const openAddDialog = (uiId: string) => {
+    setPrefillUiId(uiId);
+    setAddDialogOpen(true);
+  };
+
+  const handleAddDialogOpenChange = (open: boolean) => {
+    setAddDialogOpen(open);
+    if (!open) setPrefillUiId("");
+  };
+
   return (
     <div className="animate-fade-in">
       <div className="flex items-center justify-between mb-5">
         <h2 className="text-lg font-semibold text-foreground">Patients</h2>
-        <AddPatientDialog onAdd={onAddPatient} />
+        <AddPatientDialog
+          onAdd={onAddPatient}
+          open={addDialogOpen}
+          onOpenChange={handleAddDialogOpenChange}
+          initialUiId={prefillUiId}
+        />
       </div>
+
+      <div className="relative mb-5">
+        <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+        <input
+          type="text"
+          placeholder="Search patients by name, reference ID, visits, labs…"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className="w-full bg-card border border-border rounded-xl pl-10 pr-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 text-foreground placeholder:text-muted-foreground"
+        />
+      </div>
+
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {patients.map((patient) => (
+        {filteredPatients.map((patient) => (
           <div
             key={patient.id}
             className={cn(
@@ -97,7 +144,35 @@ export function PatientList({ patients, selectedPatientId, onAddPatient, onDelet
             </Button>
           </div>
         ))}
+
+        {showAddByReferenceId && (
+          <div className="bg-card rounded-2xl border border-dashed border-primary/30 p-4 flex flex-col justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-primary/10 flex items-center justify-center">
+                <UserPlus className="h-4 w-4 text-primary" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-foreground">Add patient</p>
+                <p className="text-xs text-muted-foreground">
+                  No patient with reference ID <span className="font-medium text-foreground">{trimmedQuery}</span>
+                </p>
+              </div>
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              className="rounded-xl w-full"
+              onClick={() => openAddDialog(trimmedQuery)}
+            >
+              <UserPlus className="h-4 w-4 mr-1" /> Add with ID {trimmedQuery}
+            </Button>
+          </div>
+        )}
       </div>
+
+      {trimmedQuery && filteredPatients.length === 0 && !showAddByReferenceId && (
+        <p className="text-sm text-muted-foreground text-center py-8">No patients found</p>
+      )}
 
       <AlertDialog open={!!pendingDelete} onOpenChange={(open) => !open && !deleting && setPendingDelete(null)}>
         <AlertDialogContent className="rounded-2xl">
