@@ -22,6 +22,7 @@ from soniox.types import (
 )
 
 from app.core.config import settings
+from app.core.debug_log import feature_log
 from app.services.api_analytics import (
     audio_file_metrics,
     count_soniox_tokens,
@@ -229,6 +230,9 @@ def _transcribe_file_sync(
             pass
 
 
+_stt_log = feature_log("stt.soniox")
+
+
 async def transcribe_audio_file(
     file_path: str,
     language: str = "en",
@@ -257,6 +261,19 @@ async def transcribe_audio_file(
         duration_ms = (time.perf_counter() - started) * 1000
         if result and result.get("audio_duration_sec") is not None:
             audio_duration_sec = result["audio_duration_sec"]
+        log_fn = _stt_log.info if success else _stt_log.error
+        log_fn(
+            duration_ms=round(duration_ms, 1),
+            audio_duration_sec=audio_duration_sec,
+            audio_file_size_bytes=audio_file_size_bytes,
+            language=language,
+            translate_to_english=translate_to_english,
+            transcription_tokens=(result or {}).get("transcription_tokens"),
+            translation_tokens=(result or {}).get("translation_tokens"),
+            transcript_chars=len(str((result or {}).get("text") or "")),
+            error=error_message,
+            provider_request_id=(result or {}).get("transcription_id"),
+        )
         await record_stt_usage(
             provider="soniox",
             model=settings.SONIOX_STT_MODEL,

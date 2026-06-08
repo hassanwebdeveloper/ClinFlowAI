@@ -8,9 +8,11 @@ from pymongo import ReturnDocument
 
 from app.api.deps import get_current_doctor_id
 from app.core.database import get_database
+from app.core.debug_log import feature_log, mask_id
 from app.schemas.clinic import ClinicCreate, ClinicOut, ClinicUpdate
 
 router = APIRouter()
+_log = feature_log("clinics")
 
 CLINICS_COLLECTION = "clinics"
 PATIENTS_COLLECTION = "patients"
@@ -50,6 +52,7 @@ async def list_clinics(
 ):
     cursor = db[CLINICS_COLLECTION].find({"doctor_id": doctor_id}).sort("created_at", -1)
     docs = await cursor.to_list(500)
+    _log.debug(doctor_id=mask_id(doctor_id), count=len(docs))
     return [_doc_to_out(d) for d in docs]
 
 
@@ -73,6 +76,11 @@ async def create_clinic(
     }
     result = await db[CLINICS_COLLECTION].insert_one(doc)
     doc["_id"] = result.inserted_id
+    _log.info(
+        doctor_id=mask_id(doctor_id),
+        clinic_id=mask_id(str(result.inserted_id)),
+        name=doc["name"],
+    )
     return _doc_to_out(doc)
 
 
@@ -110,7 +118,9 @@ async def update_clinic(
         return_document=ReturnDocument.AFTER,
     )
     if not doc:
+        _log.warning(doctor_id=mask_id(doctor_id), clinic_id=mask_id(clinic_id))
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Clinic not found")
+    _log.info(doctor_id=mask_id(doctor_id), clinic_id=mask_id(clinic_id))
     return _doc_to_out(doc)
 
 
@@ -123,10 +133,17 @@ async def delete_clinic(
     oid = _parse_clinic_oid(clinic_id)
     patient_count = await db[PATIENTS_COLLECTION].count_documents({"clinic_id": str(oid)})
     if patient_count > 0:
+        _log.warning(
+            doctor_id=mask_id(doctor_id),
+            clinic_id=mask_id(clinic_id),
+            patient_count=patient_count,
+        )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Cannot delete clinic that has patients. Remove all patients first.",
         )
     result = await db[CLINICS_COLLECTION].delete_one({"_id": oid, "doctor_id": doctor_id})
     if result.deleted_count == 0:
+        _log.warning(doctor_id=mask_id(doctor_id), clinic_id=mask_id(clinic_id))
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Clinic not found")
+    _log.info(doctor_id=mask_id(doctor_id), clinic_id=mask_id(clinic_id))

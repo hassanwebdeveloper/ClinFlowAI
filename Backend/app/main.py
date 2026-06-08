@@ -9,12 +9,18 @@ from fastapi.staticfiles import StaticFiles
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.database import close_mongodb_connection, connect_to_mongodb
+from app.core.debug_log import feature_log, setup_debug_logging
+from app.middleware.request_log import RequestLogMiddleware
+
+setup_debug_logging()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await connect_to_mongodb()
+    feature_log("app").info()
     yield
+    feature_log("app").info()
     await close_mongodb_connection()
 
 
@@ -33,6 +39,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(RequestLogMiddleware)
 
 # API routes
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)

@@ -16,6 +16,7 @@ from pymongo import ReturnDocument
 from app.api.deps import get_current_doctor_id
 from app.core.config import settings
 from app.core.database import get_database
+from app.core.debug_log import feature_log, mask_id
 from app.schemas.patient import (
     ExtractLabReportsResponse,
     HealthProfile,
@@ -65,6 +66,7 @@ from app.services.together import (
 )
 
 router = APIRouter()
+_log = feature_log("patients")
 
 PATIENTS_COLLECTION = "patients"
 LAB_FILES_BUCKET = "lab_files"
@@ -258,6 +260,11 @@ async def list_patients(
         .sort("created_at", -1)
     )
     docs = await cursor.to_list(10000)
+    _log.debug(
+        doctor_id=mask_id(doctor_id),
+        clinic_id=mask_id(clinic_id),
+        count=len(docs),
+    )
     return [_doc_to_out(d) for d in docs]
 
 
@@ -292,6 +299,11 @@ async def create_patient(
         )
     col = db[PATIENTS_COLLECTION]
     if await col.find_one({"clinic_id": clinic_id, "ui_id": ui_id}):
+        _log.warning(
+            doctor_id=mask_id(doctor_id),
+            clinic_id=mask_id(clinic_id),
+            ui_id=ui_id,
+        )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="A patient with this reference ID already exists in this clinic",
@@ -309,6 +321,12 @@ async def create_patient(
     }
     result = await col.insert_one(doc)
     doc["_id"] = result.inserted_id
+    _log.info(
+        doctor_id=mask_id(doctor_id),
+        patient_id=mask_id(str(result.inserted_id)),
+        clinic_id=mask_id(clinic_id),
+        ui_id=ui_id,
+    )
     return _doc_to_out(doc)
 
 
@@ -351,6 +369,11 @@ async def delete_patient(
                     pass
     remove_upload_files(*urls)
     await col.delete_one({"_id": oid, "doctor_id": doctor_id})
+    _log.info(
+        doctor_id=mask_id(doctor_id),
+        patient_id=mask_id(patient_id),
+        visit_count=len(doc.get("visits") or []),
+    )
 
 
 @router.post("/{patient_id}/visits", response_model=PatientOut)
@@ -374,6 +397,11 @@ async def add_visit(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Patient not found",
         )
+    _log.info(
+        doctor_id=mask_id(doctor_id),
+        patient_id=mask_id(patient_id),
+        visit_id=(visit_dict.get("id") or "-"),
+    )
     return _doc_to_out(result)
 
 
@@ -756,6 +784,12 @@ async def extract_lab_reports(
 
         groups = _parse_lab_report_groups(len(lab_disk), form)
         previews = await _extract_lab_previews_from_disk_grouped(lab_disk, groups)
+        _log.info(
+            doctor_id=mask_id(doctor_id),
+            patient_id=mask_id(patient_id),
+            file_count=len(lab_disk),
+            preview_count=len(previews),
+        )
         return ExtractLabReportsResponse(lab_previews=previews)
     except HTTPException:
         raise
@@ -849,6 +883,14 @@ async def prepare_visit_from_audio(
             run_lab_previews(),
         )
 
+        _log.info(
+            doctor_id=mask_id(doctor_id),
+            patient_id=mask_id(patient_id),
+            audio_count=len(audio_tmp_paths),
+            lab_count=len(lab_disk),
+            transcript_chars=len(transcript),
+            lab_preview_count=len(lab_previews),
+        )
         return PrepareVisitAudioResponse(
             transcript=transcript,
             lab_previews=lab_previews,
@@ -857,6 +899,12 @@ async def prepare_visit_from_audio(
     except HTTPException:
         raise
     except Exception as e:
+        _log.error(
+            doctor_id=mask_id(doctor_id),
+            patient_id=mask_id(patient_id),
+            error=str(e),
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail=str(e)) from e
     finally:
         reset_api_analytics_context(analytics_token)
@@ -1151,10 +1199,26 @@ async def create_visit_from_audio(
 
         background_tasks.add_task(refresh_health_profile, db, doctor_id, oid)
 
+        _log.info(
+            doctor_id=mask_id(doctor_id),
+            patient_id=mask_id(patient_id),
+            visit_id=visit_id,
+            audio_count=len(audio_tmp_paths),
+            lab_count=len(lab_disk),
+            lab_record_count=len(new_lab_records),
+            transcript_chars=len(transcript),
+            ai_reminders_pending=True,
+        )
         return _doc_to_out(updated)
     except HTTPException:
         raise
     except Exception as e:
+        _log.error(
+            doctor_id=mask_id(doctor_id),
+            patient_id=mask_id(patient_id),
+            error=str(e),
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail=str(e)) from e
     finally:
         reset_api_analytics_context(analytics_token)
@@ -1266,12 +1330,23 @@ async def hydrate_visit_prescriptions(
     finally:
         reset_api_analytics_context(analytics_token)
     if not new_rx:
+        _log.info(
+            doctor_id=mask_id(doctor_id),
+            patient_id=mask_id(patient_id),
+            visit_id=visit_id,
+        )
         return _doc_to_out(doc)
 
     names = [r["medicine"] for r in new_rx]
     visits[idx] = {**v, "prescriptions": new_rx, "prescribed_medicines": names}
     await col.update_one({"_id": oid, "doctor_id": doctor_id}, {"$set": {"visits": visits}})
     updated = await col.find_one({"_id": oid, "doctor_id": doctor_id})
+    _log.info(
+        doctor_id=mask_id(doctor_id),
+        patient_id=mask_id(patient_id),
+        visit_id=visit_id,
+        prescription_count=len(new_rx),
+    )
     return _doc_to_out(updated)
 
 
@@ -1307,6 +1382,11 @@ async def delete_visit(
         {"$set": {"visits": visits, "lab_reports": lab_reports}},
     )
     updated = await col.find_one({"_id": oid})
+    _log.info(
+        doctor_id=mask_id(doctor_id),
+        patient_id=mask_id(patient_id),
+        visit_id=visit_id,
+    )
     return _doc_to_out(updated)
 
 
@@ -1415,6 +1495,13 @@ async def regenerate_visit_soap(
         background_tasks.add_task(refresh_health_profile, db, doctor_id, oid)
 
         updated = await col.find_one({"_id": oid, "doctor_id": doctor_id})
+        _log.info(
+            doctor_id=mask_id(doctor_id),
+            patient_id=mask_id(patient_id),
+            visit_id=visit_id,
+            transcript_chars=len(transcript),
+            has_embedding=bool(emb_vec),
+        )
         return _doc_to_out(updated)
     finally:
         reset_api_analytics_context(analytics_token)
@@ -1497,6 +1584,13 @@ async def refresh_visit_ai_reminders(
 
     await col.update_one({"_id": oid, "doctor_id": doctor_id}, {"$set": {"visits": visits}})
     updated = await col.find_one({"_id": oid, "doctor_id": doctor_id})
+    _log.info(
+        doctor_id=mask_id(doctor_id),
+        patient_id=mask_id(patient_id),
+        visit_id=visit_id,
+        reminder_count=len(reminders_raw or []),
+        has_embedding=bool(emb_vec),
+    )
     return _doc_to_out(updated)
 
 
@@ -1563,6 +1657,13 @@ async def patch_health_profile(
         {"$set": {"health_profile": merged}},
     )
     updated = await col.find_one({"_id": oid, "doctor_id": doctor_id})
+    _log.info(
+        doctor_id=mask_id(doctor_id),
+        patient_id=mask_id(patient_id),
+        conditions=len(merged.get("conditions") or []),
+        medications=len(merged.get("medications") or []),
+        allergies=len(merged.get("allergies") or []),
+    )
     return _doc_to_out(updated)
 
 
@@ -1611,4 +1712,10 @@ async def patch_lab_report(
     lab_reports[idx] = updated_lr
     await col.update_one({"_id": oid}, {"$set": {"lab_reports": lab_reports}})
     updated = await col.find_one({"_id": oid})
+    _log.info(
+        doctor_id=mask_id(doctor_id),
+        patient_id=mask_id(patient_id),
+        lab_report_id=lab_report_id,
+        fields=list(patch.keys()),
+    )
     return _doc_to_out(updated)

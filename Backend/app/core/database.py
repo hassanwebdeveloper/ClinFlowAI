@@ -3,7 +3,10 @@ import redis
 from pymongo.errors import OperationFailure
 
 from app.core.config import settings
+from app.core.debug_log import feature_log
 from app.schemas.doctor import DEFAULT_LICENSE_TYPE
+
+_db_log = feature_log("database")
 
 # MongoDB Connection
 mongodb_client: AsyncIOMotorClient = None
@@ -23,7 +26,7 @@ async def connect_to_mongodb():
             {"$set": {"license_type": DEFAULT_LICENSE_TYPE}},
         )
         if backfill.modified_count:
-            print(f"Backfilled license_type for {backfill.modified_count} doctor(s).")
+            _db_log.info(modified_count=backfill.modified_count)
         await db["access_requests"].create_index("token_hash", unique=True)
         await db["access_requests"].create_index([("email", 1), ("status", 1)])
         await db["clinics"].create_index("doctor_id")
@@ -47,16 +50,16 @@ async def connect_to_mongodb():
         await api_usage.create_index([("service_type", 1), ("created_at", -1)])
         await api_usage.create_index([("feature", 1), ("created_at", -1)])
 
-        print("Connected to MongoDB.")
+        _db_log.info(db_name=settings.MONGODB_DB_NAME)
     except Exception as e:
-        print(f"Could not connect to MongoDB: {e}")
+        _db_log.error(error=str(e), exc_info=True)
         raise e
 
 async def close_mongodb_connection():
     global mongodb_client
     if mongodb_client:
         mongodb_client.close()
-        print("MongoDB connection closed.")
+        _db_log.info()
 
 def get_database():
     return mongodb_client[settings.MONGODB_DB_NAME]

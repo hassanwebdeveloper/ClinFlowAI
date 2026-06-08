@@ -1,4 +1,3 @@
-import logging
 import hashlib
 import secrets
 from datetime import datetime, timezone
@@ -9,6 +8,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.core.config import settings
 from app.core.database import get_database, get_redis
+from app.core.debug_log import feature_log, mask_id
 from app.core.security import create_access_token, hash_password, verify_password
 from app.schemas.doctor import (
     AccessRequestDecisionRequest,
@@ -30,7 +30,7 @@ from app.services.email import (
 )
 
 router = APIRouter()
-logger = logging.getLogger(__name__)
+_log = feature_log("auth")
 
 DOCTORS_COLLECTION = "doctors"
 ACCESS_REQUESTS_COLLECTION = "access_requests"
@@ -91,8 +91,10 @@ def _issue_reset_token(doctor_id: ObjectId) -> str:
 @router.post("/signup", response_model=MessageResponse)
 async def signup(body: DoctorSignup, db: AsyncIOMotorDatabase = Depends(get_db)):
     email = body.email.lower().strip()
+    _log.info(email=email, specialty=body.specialty.strip())
     doctors_col = db[DOCTORS_COLLECTION]
     if await doctors_col.find_one({"email": email}):
+        _log.warning(email=email, reason="account_exists")
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="An account with this email already exists",
@@ -130,7 +132,11 @@ async def signup(body: DoctorSignup, db: AsyncIOMotorDatabase = Depends(get_db))
         )
     except Exception:
         await requests_col.delete_one({"_id": insert.inserted_id})
-        logger.exception("Failed to send access request email for %s", email)
+        _log.error(
+            email=email,
+            request_id=mask_id(str(insert.inserted_id)),
+            exc_info=True,
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Unable to submit access request right now. Please try again shortly.",
@@ -138,7 +144,11 @@ async def signup(body: DoctorSignup, db: AsyncIOMotorDatabase = Depends(get_db))
     try:
         await send_request_submitted_email(email, body.name.strip())
     except Exception:
-        logger.exception("Failed to send request confirmation email to %s", email)
+        _log.error(email=email, exc_info=True)
+    _log.info(
+        email=email,
+        request_id=mask_id(str(insert.inserted_id)),
+    )
     return MessageResponse(message="Access request submitted. We'll contact you by email.")
 
 
@@ -146,10 +156,17 @@ async def signup(body: DoctorSignup, db: AsyncIOMotorDatabase = Depends(get_db))
 async def review_access_request(token: str, db: AsyncIOMotorDatabase = Depends(get_db)):
     token = token.strip()
     if not token:
+        _log.warning()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing review token")
     doc = await db[ACCESS_REQUESTS_COLLECTION].find_one({"token_hash": _request_token_hash(token)})
     if not doc:
+        _log.warning()
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Access request not found")
+    _log.info(
+        email=doc["email"],
+        status=doc.get("status", "pending"),
+        request_id=mask_id(str(doc["_id"])),
+    )
     return _request_review_response(doc)
 
 
@@ -166,14 +183,24 @@ async def decide_access_request(
     requests_col = db[ACCESS_REQUESTS_COLLECTION]
     doc = await requests_col.find_one({"token_hash": _request_token_hash(token)})
     if not doc:
+        _log.warning()
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Access request not found")
     if doc.get("status") != "pending":
+        _log.warning(
+            email=doc["email"],
+            status=doc.get("status", "processed"),
+        )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"This request is already {doc.get('status', 'processed')}.",
         )
 
     email = doc["email"]
+    _log.info(
+        email=email,
+        decision=body.decision,
+        request_id=mask_id(str(doc["_id"])),
+    )
     name = doc["name"]
     now = datetime.now(timezone.utc)
 
@@ -210,7 +237,11 @@ async def decide_access_request(
                 set_password_link=reset_link,
             )
         except Exception:
-            logger.exception("Failed to send approval email to %s", email)
+            _log.error(
+                email=email,
+                doctor_id=mask_id(str(doctor_id)),
+                exc_info=True,
+            )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Request approved, but could not send email. Please retry.",
@@ -218,6 +249,11 @@ async def decide_access_request(
         await requests_col.update_one(
             {"_id": doc["_id"]},
             {"$set": {"status": "approved", "decided_at": now}},
+        )
+        _log.info(
+            email=email,
+            doctor_id=mask_id(str(doctor_id)),
+            existing_account=bool(existing_doctor),
         )
         return MessageResponse(message="Access request approved and notification sent.")
 
@@ -228,7 +264,7 @@ async def decide_access_request(
             approved=False,
         )
     except Exception:
-        logger.exception("Failed to send rejection email to %s", email)
+        _log.error(email=email, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Request rejected, but could not send email. Please retry.",
@@ -237,6 +273,7 @@ async def decide_access_request(
         {"_id": doc["_id"]},
         {"$set": {"status": "rejected", "decided_at": now}},
     )
+    _log.info(email=email)
     return MessageResponse(message="Access request rejected and notification sent.")
 
 
@@ -245,6 +282,10 @@ async def signin(body: DoctorLogin, db: AsyncIOMotorDatabase = Depends(get_db)):
     email = body.email.lower().strip()
     doc = await db[DOCTORS_COLLECTION].find_one({"email": email})
     if not doc or not verify_password(body.password, doc["password_hash"]):
+        _log.warning(
+            email=email,
+            reason="invalid_credentials" if doc else "unknown_email",
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
@@ -253,6 +294,7 @@ async def signin(body: DoctorLogin, db: AsyncIOMotorDatabase = Depends(get_db)):
         subject=str(doc["_id"]),
         extra={"email": doc["email"], "name": doc["name"]},
     )
+    _log.info(email=email, doctor_id=mask_id(str(doc["_id"])))
     return AuthTokenResponse(access_token=token, user=_doctor_response(doc))
 
 
@@ -266,8 +308,11 @@ async def forgot_password(body: ForgotPasswordRequest, db: AsyncIOMotorDatabase 
         redis.setex(f"{RESET_KEY_PREFIX}{token}", settings.PASSWORD_RESET_TOKEN_EXPIRE_SECONDS, str(doc["_id"]))
         try:
             await send_reset_email(email, doc.get("name", ""), token)
+            _log.info(email=email, doctor_id=mask_id(str(doc["_id"])))
         except Exception:
-            logger.exception("Failed to send password reset email to %s", email)
+            _log.error(email=email, exc_info=True)
+    else:
+        _log.info(email=email)
     return MessageResponse(message="If an account exists, a reset link has been sent.")
 
 
@@ -277,6 +322,7 @@ async def reset_password(body: ResetPasswordRequest, db: AsyncIOMotorDatabase = 
     key = f"{RESET_KEY_PREFIX}{body.token}"
     doctor_id = redis.get(key)
     if not doctor_id:
+        _log.warning(reason="missing_or_expired")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Invalid or expired reset link",
@@ -285,6 +331,7 @@ async def reset_password(body: ResetPasswordRequest, db: AsyncIOMotorDatabase = 
         oid = ObjectId(doctor_id)
     except Exception:
         redis.delete(key)
+        _log.warning(reason="malformed_doctor_id")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Invalid or expired reset link",
@@ -295,8 +342,10 @@ async def reset_password(body: ResetPasswordRequest, db: AsyncIOMotorDatabase = 
     )
     redis.delete(key)
     if result.matched_count == 0:
+        _log.warning(doctor_id=mask_id(str(oid)))
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Invalid or expired reset link",
         )
+    _log.info(doctor_id=mask_id(str(oid)))
     return MessageResponse(message="Password updated. You can now sign in.")

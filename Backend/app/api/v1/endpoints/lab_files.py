@@ -9,8 +9,10 @@ from motor.motor_asyncio import AsyncIOMotorDatabase, AsyncIOMotorGridFSBucket
 
 from app.api.deps import get_current_doctor_id
 from app.core.database import get_database
+from app.core.debug_log import feature_log, mask_id
 
 router = APIRouter()
+_log = feature_log("lab_files")
 
 BUCKET_NAME = "lab_files"
 
@@ -41,9 +43,19 @@ async def get_lab_file(
 
     meta = getattr(gridout, "metadata", None) or {}
     if meta.get("doctor_id") != doctor_id:
+        _log.warning(
+            doctor_id=mask_id(doctor_id),
+            file_id=mask_id(file_id),
+        )
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
 
     filename = meta.get("original_filename") or getattr(gridout, "filename", None) or f"lab-{file_id}"
+    _log.info(
+        doctor_id=mask_id(doctor_id),
+        file_id=mask_id(file_id),
+        filename=filename,
+        content_type=meta.get("content_type"),
+    )
     content_type = meta.get("content_type") or mimetypes.guess_type(str(filename))[0] or "application/octet-stream"
 
     async def iter_chunks():

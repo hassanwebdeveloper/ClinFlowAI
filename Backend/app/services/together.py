@@ -16,9 +16,6 @@ from app.services.api_analytics import (
 )
 
 
-TOGETHER_BASE_URL = "https://api.together.xyz/v1"
-
-
 async def transcribe_whisper(
     file_path: str,
     language: str = "en",
@@ -45,7 +42,7 @@ async def transcribe_whisper(
                 if not translate_to_english and language:
                     data["language"] = language
                 resp = await client.post(
-                    f"{TOGETHER_BASE_URL}/audio/transcriptions",
+                    f"{settings.TOGETHER_BASE_URL}/audio/transcriptions",
                     headers=headers,
                     data=data,
                     files=files,
@@ -142,7 +139,7 @@ async def _chat_completion(messages: list[dict[str, str]], *, force_json: bool) 
     try:
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
-                f"{TOGETHER_BASE_URL}/chat/completions",
+                f"{settings.TOGETHER_BASE_URL}/chat/completions",
                 headers=headers,
                 json=body,
             )
@@ -197,7 +194,7 @@ async def _chat_completion_multimodal(
     try:
         async with httpx.AsyncClient(timeout=180) as client:
             resp = await client.post(
-                f"{TOGETHER_BASE_URL}/chat/completions",
+                f"{settings.TOGETHER_BASE_URL}/chat/completions",
                 headers=headers,
                 json=body,
             )
@@ -890,7 +887,7 @@ async def generate_embedding(text: str) -> list[float]:
         try:
             async with httpx.AsyncClient(timeout=60) as client:
                 resp = await client.post(
-                    f"{TOGETHER_BASE_URL}/embeddings",
+                    f"{settings.TOGETHER_BASE_URL}/embeddings",
                     headers=headers,
                     json=body,
                 )

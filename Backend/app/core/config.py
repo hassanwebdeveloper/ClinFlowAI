@@ -7,6 +7,13 @@ class Settings(BaseSettings):
     API_V1_PREFIX: str = "/api/v1"
     DEBUG: bool = True
 
+    # File-based debug logging (rotating; see app/core/debug_log.py)
+    LOG_DIR: str = "logs"
+    LOG_FILE_NAME: str = "clinflow-debug.log"
+    LOG_LEVEL: str = "INFO"
+    LOG_MAX_BYTES: int = 10_000_000
+    LOG_BACKUP_COUNT: int = 20
+
     # MongoDB Configuration
     MONGODB_URL: str
     MONGODB_DB_NAME: str
@@ -22,6 +29,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int
 
     # Together AI
+    TOGETHER_BASE_URL: str = "https://api.together.xyz/v1"
     TOGETHER_API_KEY: str = ""
     TOGETHER_WHISPER_MODEL: str = "openai/whisper-large-v3"
     TOGETHER_LLM_MODEL: str = "Qwen/Qwen3-235B-A22B-Instruct-2507-tput"
