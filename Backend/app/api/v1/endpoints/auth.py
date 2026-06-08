@@ -14,6 +14,7 @@ from app.schemas.doctor import (
     AccessRequestDecisionRequest,
     AccessRequestReviewResponse,
     AuthTokenResponse,
+    DEFAULT_LICENSE_TYPE,
     DoctorLogin,
     DoctorResponse,
     DoctorSignup,
@@ -51,6 +52,7 @@ def _doctor_response(doc: dict) -> DoctorResponse:
         years_of_experience=doc.get("years_of_experience"),
         practice_name=doc.get("practice_name"),
         license_number=doc.get("license_number"),
+        license_type=doc.get("license_type", DEFAULT_LICENSE_TYPE),
     )
 
 
@@ -193,6 +195,7 @@ async def decide_access_request(
                     "years_of_experience": doc.get("years_of_experience"),
                     "practice_name": doc.get("practice_name"),
                     "license_number": doc.get("license_number"),
+                    "license_type": DEFAULT_LICENSE_TYPE,
                 }
             )
             doctor_id = created.inserted_id

@@ -1,11 +1,19 @@
 import base64
 import json
 import math
+import time
 from typing import Any
 
 import httpx
 
 from app.core.config import settings
+from app.services.api_analytics import (
+    analytics_feature,
+    audio_file_metrics,
+    record_llm_usage,
+    record_stt_usage,
+    record_vlm_usage,
+)
 
 
 TOGETHER_BASE_URL = "https://api.together.xyz/v1"
@@ -19,47 +27,80 @@ async def transcribe_whisper(
 ) -> str:
     if not settings.TOGETHER_API_KEY:
         raise ValueError("TOGETHER_API_KEY is not configured")
+    started = time.perf_counter()
+    success = False
+    error_message: str | None = None
+    payload: dict[str, Any] | None = None
+    audio_duration_sec, audio_file_size_bytes = audio_file_metrics(file_path)
     headers = {"Authorization": f"Bearer {settings.TOGETHER_API_KEY}"}
-    async with httpx.AsyncClient(timeout=180) as client:
-        with open(file_path, "rb") as f:
-            files = {"file": (file_path, f, "application/octet-stream")}
-            data: dict[str, Any] = {
-                "model": settings.TOGETHER_WHISPER_MODEL,
-                "response_format": "json",
-                "task": "translate" if translate_to_english else "transcribe",
-            }
-            if not translate_to_english and language:
-                data["language"] = language
-            resp = await client.post(
-                f"{TOGETHER_BASE_URL}/audio/transcriptions",
-                headers=headers,
-                data=data,
-                files=files,
-            )
-    resp.raise_for_status()
-    payload = resp.json()
-    text = payload.get("text")
-    if not isinstance(text, str) or not text.strip():
-        raise ValueError("Whisper returned empty transcript")
-    return text.strip()
+    try:
+        async with httpx.AsyncClient(timeout=180) as client:
+            with open(file_path, "rb") as f:
+                files = {"file": (file_path, f, "application/octet-stream")}
+                data: dict[str, Any] = {
+                    "model": settings.TOGETHER_WHISPER_MODEL,
+                    "response_format": "json",
+                    "task": "translate" if translate_to_english else "transcribe",
+                }
+                if not translate_to_english and language:
+                    data["language"] = language
+                resp = await client.post(
+                    f"{TOGETHER_BASE_URL}/audio/transcriptions",
+                    headers=headers,
+                    data=data,
+                    files=files,
+                )
+        resp.raise_for_status()
+        payload = resp.json()
+        text = payload.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("Whisper returned empty transcript")
+        success = True
+        return text.strip()
+    except Exception as exc:
+        error_message = str(exc)
+        raise
+    finally:
+        duration_ms = (time.perf_counter() - started) * 1000
+        transcription_tokens = None
+        translation_tokens = None
+        if isinstance(payload, dict):
+            usage = payload.get("usage")
+            if isinstance(usage, dict):
+                transcription_tokens = usage.get("prompt_tokens") or usage.get("input_tokens")
+                translation_tokens = usage.get("completion_tokens") or usage.get("output_tokens")
+        await record_stt_usage(
+            provider="together",
+            model=settings.TOGETHER_WHISPER_MODEL,
+            duration_ms=duration_ms,
+            success=success,
+            audio_duration_sec=audio_duration_sec,
+            audio_file_size_bytes=audio_file_size_bytes,
+            transcription_tokens=transcription_tokens,
+            translation_tokens=translation_tokens if translate_to_english else None,
+            translate_to_english=translate_to_english,
+            language=language,
+            error_message=error_message,
+        )
 
 
 async def transcribe_visit_audio(file_path: str, language: str = "en") -> str:
     """Route visit audio to Together Whisper or Soniox based on TRANSCRIPTION_PROVIDER."""
-    translate = settings.TRANSCRIBE_TRANSLATE_TO_ENGLISH
-    if settings.TRANSCRIPTION_PROVIDER == "together":
-        return await transcribe_whisper(
+    with analytics_feature("transcribe_visit_audio"):
+        translate = settings.TRANSCRIBE_TRANSLATE_TO_ENGLISH
+        if settings.TRANSCRIPTION_PROVIDER == "together":
+            return await transcribe_whisper(
+                file_path,
+                language,
+                translate_to_english=translate,
+            )
+        from app.services.soniox_stt import transcribe_audio_file
+
+        return await transcribe_audio_file(
             file_path,
             language,
             translate_to_english=translate,
         )
-    from app.services.soniox_stt import transcribe_audio_file
-
-    return await transcribe_audio_file(
-        file_path,
-        language,
-        translate_to_english=translate,
-    )
 
 
 SOAP_SCHEMA_HINT = {
@@ -82,6 +123,10 @@ def _extract_json_object(text: str) -> dict[str, Any]:
 
 
 async def _chat_completion(messages: list[dict[str, str]], *, force_json: bool) -> str:
+    started = time.perf_counter()
+    success = False
+    error_message: str | None = None
+    data: dict[str, Any] | None = None
     headers = {
         "Authorization": f"Bearer {settings.TOGETHER_API_KEY}",
         "Content-Type": "application/json",
@@ -91,25 +136,41 @@ async def _chat_completion(messages: list[dict[str, str]], *, force_json: bool) 
         "messages": messages,
         "temperature": 0.2,
     }
-    # Together supports OpenAI-compatible request fields; prefer JSON mode when available.
     if force_json:
         body["response_format"] = {"type": "json_object"}
 
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(
-            f"{TOGETHER_BASE_URL}/chat/completions",
-            headers=headers,
-            json=body,
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                f"{TOGETHER_BASE_URL}/chat/completions",
+                headers=headers,
+                json=body,
+            )
+        resp.raise_for_status()
+        data = resp.json()
+        choice0 = (data.get("choices") or [{}])[0] or {}
+        content = ((choice0.get("message", {}) or {}).get("content", "")) or ""
+        if not isinstance(content, str) or not content.strip():
+            content = choice0.get("text", "") or ""
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("LLM returned empty response")
+        success = True
+        return content.strip()
+    except Exception as exc:
+        error_message = str(exc)
+        raise
+    finally:
+        duration_ms = (time.perf_counter() - started) * 1000
+        await record_llm_usage(
+            provider="together",
+            model=settings.TOGETHER_LLM_MODEL,
+            operation="chat_completion",
+            duration_ms=duration_ms,
+            success=success,
+            usage_data=data,
+            error_message=error_message,
+            provider_request_id=(data or {}).get("id") if isinstance(data, dict) else None,
         )
-    resp.raise_for_status()
-    data: dict[str, Any] = resp.json()
-    choice0 = (data.get("choices") or [{}])[0] or {}
-    content = ((choice0.get("message", {}) or {}).get("content", "")) or ""
-    if not isinstance(content, str) or not content.strip():
-        content = choice0.get("text", "") or ""
-    if not isinstance(content, str) or not content.strip():
-        raise ValueError("LLM returned empty response")
-    return content.strip()
 
 
 async def _chat_completion_multimodal(
@@ -120,6 +181,10 @@ async def _chat_completion_multimodal(
 ) -> str:
     if not settings.TOGETHER_API_KEY:
         raise ValueError("TOGETHER_API_KEY is not configured")
+    started = time.perf_counter()
+    success = False
+    error_message: str | None = None
+    data: dict[str, Any] | None = None
     headers = {
         "Authorization": f"Bearer {settings.TOGETHER_API_KEY}",
         "Content-Type": "application/json",
@@ -129,21 +194,38 @@ async def _chat_completion_multimodal(
         "messages": messages,
         "temperature": temperature,
     }
-    async with httpx.AsyncClient(timeout=180) as client:
-        resp = await client.post(
-            f"{TOGETHER_BASE_URL}/chat/completions",
-            headers=headers,
-            json=body,
+    try:
+        async with httpx.AsyncClient(timeout=180) as client:
+            resp = await client.post(
+                f"{TOGETHER_BASE_URL}/chat/completions",
+                headers=headers,
+                json=body,
+            )
+        resp.raise_for_status()
+        data = resp.json()
+        choice0 = (data.get("choices") or [{}])[0] or {}
+        content = ((choice0.get("message", {}) or {}).get("content", "")) or ""
+        if not isinstance(content, str) or not content.strip():
+            content = choice0.get("text", "") or ""
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("Vision model returned empty response")
+        success = True
+        return content.strip()
+    except Exception as exc:
+        error_message = str(exc)
+        raise
+    finally:
+        duration_ms = (time.perf_counter() - started) * 1000
+        await record_vlm_usage(
+            provider="together",
+            model=model,
+            operation="chat_completion",
+            duration_ms=duration_ms,
+            success=success,
+            usage_data=data,
+            error_message=error_message,
+            provider_request_id=(data or {}).get("id") if isinstance(data, dict) else None,
         )
-    resp.raise_for_status()
-    data: dict[str, Any] = resp.json()
-    choice0 = (data.get("choices") or [{}])[0] or {}
-    content = ((choice0.get("message", {}) or {}).get("content", "")) or ""
-    if not isinstance(content, str) or not content.strip():
-        content = choice0.get("text", "") or ""
-    if not isinstance(content, str) or not content.strip():
-        raise ValueError("Vision model returned empty response")
-    return content.strip()
 
 
 LAB_VL_SYSTEM = """You extract information from medical laboratory or pathology reports shown in images into a clear clinical summary.
@@ -170,31 +252,32 @@ Rules:
 
 
 async def extract_lab_report_with_vl(image_bytes: bytes, mime_type: str) -> str:
-    if not mime_type.startswith("image/"):
-        mime_type = "image/png"
-    b64 = base64.standard_b64encode(image_bytes).decode("ascii")
-    data_uri = f"data:{mime_type};base64,{b64}"
-    user_content: list[dict[str, Any]] = [
-        {
-            "type": "text",
-            "text": (
-                "Extract all laboratory results and relevant identifiers from this image. "
-                "Follow the LAB_TEST_NAME, LAB_TEST_PATTERN, and LAB_ANALYTES_JSON header rules "
-                "in the system message (pattern applies to the whole ordered test, not each result "
-                "line; analytes JSON must be a single minified line with numeric values when present)."
-            ),
-        },
-        {"type": "image_url", "image_url": {"url": data_uri}},
-    ]
-    messages = [
-        {"role": "system", "content": LAB_VL_SYSTEM},
-        {"role": "user", "content": user_content},
-    ]
-    return await _chat_completion_multimodal(
-        messages,
-        model=settings.TOGETHER_VL_MODEL,
-        temperature=0.1,
-    )
+    with analytics_feature("extract_lab_report_vl"):
+        if not mime_type.startswith("image/"):
+            mime_type = "image/png"
+        b64 = base64.standard_b64encode(image_bytes).decode("ascii")
+        data_uri = f"data:{mime_type};base64,{b64}"
+        user_content: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": (
+                    "Extract all laboratory results and relevant identifiers from this image. "
+                    "Follow the LAB_TEST_NAME, LAB_TEST_PATTERN, and LAB_ANALYTES_JSON header rules "
+                    "in the system message (pattern applies to the whole ordered test, not each result "
+                    "line; analytes JSON must be a single minified line with numeric values when present)."
+                ),
+            },
+            {"type": "image_url", "image_url": {"url": data_uri}},
+        ]
+        messages = [
+            {"role": "system", "content": LAB_VL_SYSTEM},
+            {"role": "user", "content": user_content},
+        ]
+        return await _chat_completion_multimodal(
+            messages,
+            model=settings.TOGETHER_VL_MODEL,
+            temperature=0.1,
+        )
 
 
 LAB_TEXT_SYSTEM = """You normalize raw text from laboratory or pathology reports into a clear clinical summary.
@@ -262,71 +345,73 @@ async def extract_lab_reports_from_transcript(
     priority. Analyte normalization is the caller's responsibility (so the same
     pipeline as file-based extraction is used).
     """
-    if not settings.TOGETHER_API_KEY:
-        raise ValueError("TOGETHER_API_KEY is not configured")
-    text = (transcript or "").strip()
-    if not text:
-        return []
-    cap = 48_000
-    if len(text) > cap:
-        text = text[:cap] + "\n\n[truncated]"
-    excludes = sorted(
-        {n.strip() for n in (excluded_test_names or []) if n and n.strip()},
-        key=str.lower,
-    )
-    user = (
-        "EXCLUDE_TESTS:\n"
-        f"{json.dumps(excludes, ensure_ascii=False)}\n\n"
-        "TRANSCRIPT:\n"
-        f"{text}"
-    )
-    messages = [
-        {"role": "system", "content": LAB_TRANSCRIPT_SYSTEM},
-        {"role": "user", "content": user},
-    ]
-    content = await _chat_completion(messages, force_json=True)
-    try:
-        parsed = _extract_json_object(content)
-    except json.JSONDecodeError:
-        return []
-    raw = parsed.get("lab_reports")
-    if not isinstance(raw, list):
-        return []
-    excluded_lower = {n.lower() for n in excludes}
-    out: list[dict[str, Any]] = []
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("test_name", "")).strip()
-        if not name or name.lower() in excluded_lower:
-            continue
-        details = str(item.get("details", "")).strip()
-        pattern = str(item.get("lab_test_pattern", "")).strip()
-        analytes_raw = item.get("analytes")
-        analytes: list[Any] = analytes_raw if isinstance(analytes_raw, list) else []
-        out.append({
-            "test_name": name,
-            "lab_test_pattern": pattern,
-            "details": details,
-            "analytes": analytes,
-        })
-    return out
+    with analytics_feature("extract_transcript_lab_reports"):
+        if not settings.TOGETHER_API_KEY:
+            raise ValueError("TOGETHER_API_KEY is not configured")
+        text = (transcript or "").strip()
+        if not text:
+            return []
+        cap = 48_000
+        if len(text) > cap:
+            text = text[:cap] + "\n\n[truncated]"
+        excludes = sorted(
+            {n.strip() for n in (excluded_test_names or []) if n and n.strip()},
+            key=str.lower,
+        )
+        user = (
+            "EXCLUDE_TESTS:\n"
+            f"{json.dumps(excludes, ensure_ascii=False)}\n\n"
+            "TRANSCRIPT:\n"
+            f"{text}"
+        )
+        messages = [
+            {"role": "system", "content": LAB_TRANSCRIPT_SYSTEM},
+            {"role": "user", "content": user},
+        ]
+        content = await _chat_completion(messages, force_json=True)
+        try:
+            parsed = _extract_json_object(content)
+        except json.JSONDecodeError:
+            return []
+        raw = parsed.get("lab_reports")
+        if not isinstance(raw, list):
+            return []
+        excluded_lower = {n.lower() for n in excludes}
+        out: list[dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("test_name", "")).strip()
+            if not name or name.lower() in excluded_lower:
+                continue
+            details = str(item.get("details", "")).strip()
+            pattern = str(item.get("lab_test_pattern", "")).strip()
+            analytes_raw = item.get("analytes")
+            analytes: list[Any] = analytes_raw if isinstance(analytes_raw, list) else []
+            out.append({
+                "test_name": name,
+                "lab_test_pattern": pattern,
+                "details": details,
+                "analytes": analytes,
+            })
+        return out
 
 
 async def normalize_lab_report_from_text(raw_document_text: str) -> str:
-    if not settings.TOGETHER_API_KEY:
-        raise ValueError("TOGETHER_API_KEY is not configured")
-    text = raw_document_text.strip()
-    if not text:
-        raise ValueError("Empty lab document text")
-    cap = 48_000
-    if len(text) > cap:
-        text = text[:cap] + "\n\n[truncated]"
-    messages = [
-        {"role": "system", "content": LAB_TEXT_SYSTEM},
-        {"role": "user", "content": f"Document text:\n\n{text}"},
-    ]
-    return await _chat_completion(messages, force_json=False)
+    with analytics_feature("normalize_lab_report_text"):
+        if not settings.TOGETHER_API_KEY:
+            raise ValueError("TOGETHER_API_KEY is not configured")
+        text = raw_document_text.strip()
+        if not text:
+            raise ValueError("Empty lab document text")
+        cap = 48_000
+        if len(text) > cap:
+            text = text[:cap] + "\n\n[truncated]"
+        messages = [
+            {"role": "system", "content": LAB_TEXT_SYSTEM},
+            {"role": "user", "content": f"Document text:\n\n{text}"},
+        ]
+        return await _chat_completion(messages, force_json=False)
 
 
 LAB_ABNORMAL_FLAG_JUDGE_SYSTEM = """You decide whether each structured laboratory **row** is abnormal.
@@ -361,43 +446,44 @@ async def _infer_abnormal_flags_chunk(
     analytes_slice: list[dict[str, Any]],
     full_lab_report_text: str,
 ) -> list[str]:
-    if not analytes_slice:
-        return []
-    payload: list[dict[str, Any]] = []
-    for i, a in enumerate(analytes_slice):
-        payload.append({
-            "index": i,
-            "name": (a.get("name") or "").strip(),
-            "value": a.get("value"),
-            "unit": (a.get("unit") or "").strip(),
-            "ref_low": a.get("ref_low"),
-            "ref_high": a.get("ref_high"),
-            "qualitative_value": (a.get("qualitative_value") or "").strip() or None,
-        })
-    text_block = (full_lab_report_text or "").strip()
-    if len(text_block) > _ABNORMAL_JUDGE_TEXT_CAP:
-        text_block = text_block[: _ABNORMAL_JUDGE_TEXT_CAP].rstrip() + "\n\n[truncated]"
-    user = (
-        "FULL LAB REPORT TEXT (use entirely for context; may be qualitative-only or mixed):\n---\n"
-        f"{text_block if text_block else '(none — rely on structured rows only)'}\n"
-        "---\n\nSTRUCTURED ANALYTE ROWS (emit exactly one flag per row, same order):\n"
-        f"{json.dumps({'analytes': payload}, ensure_ascii=False)}"
-    )
-    messages = [
-        {"role": "system", "content": LAB_ABNORMAL_FLAG_JUDGE_SYSTEM},
-        {"role": "user", "content": user},
-    ]
-    content = await _chat_completion(messages, force_json=True)
-    parsed = _extract_json_object(content)
-    raw_flags = parsed.get("flags")
-    n = len(analytes_slice)
-    out = [""] * n
-    _allowed = frozenset({"", "H", "L", "critical"})
-    if isinstance(raw_flags, list):
-        for i in range(min(n, len(raw_flags))):
-            f = str(raw_flags[i] or "").strip()
-            out[i] = f if f in _allowed else ""
-    return out
+    with analytics_feature("infer_abnormal_flags"):
+        if not analytes_slice:
+            return []
+        payload: list[dict[str, Any]] = []
+        for i, a in enumerate(analytes_slice):
+            payload.append({
+                "index": i,
+                "name": (a.get("name") or "").strip(),
+                "value": a.get("value"),
+                "unit": (a.get("unit") or "").strip(),
+                "ref_low": a.get("ref_low"),
+                "ref_high": a.get("ref_high"),
+                "qualitative_value": (a.get("qualitative_value") or "").strip() or None,
+            })
+        text_block = (full_lab_report_text or "").strip()
+        if len(text_block) > _ABNORMAL_JUDGE_TEXT_CAP:
+            text_block = text_block[: _ABNORMAL_JUDGE_TEXT_CAP].rstrip() + "\n\n[truncated]"
+        user = (
+            "FULL LAB REPORT TEXT (use entirely for context; may be qualitative-only or mixed):\n---\n"
+            f"{text_block if text_block else '(none — rely on structured rows only)'}\n"
+            "---\n\nSTRUCTURED ANALYTE ROWS (emit exactly one flag per row, same order):\n"
+            f"{json.dumps({'analytes': payload}, ensure_ascii=False)}"
+        )
+        messages = [
+            {"role": "system", "content": LAB_ABNORMAL_FLAG_JUDGE_SYSTEM},
+            {"role": "user", "content": user},
+        ]
+        content = await _chat_completion(messages, force_json=True)
+        parsed = _extract_json_object(content)
+        raw_flags = parsed.get("flags")
+        n = len(analytes_slice)
+        out = [""] * n
+        _allowed = frozenset({"", "H", "L", "critical"})
+        if isinstance(raw_flags, list):
+            for i in range(min(n, len(raw_flags))):
+                f = str(raw_flags[i] or "").strip()
+                out[i] = f if f in _allowed else ""
+        return out
 
 
 async def infer_abnormal_flags_for_analytes(
@@ -463,6 +549,11 @@ async def extract_prescriptions_from_transcript(transcript: str) -> list[dict[st
 
     Used to backfill structured `prescriptions` for legacy visits that only stored medicine names.
     """
+    with analytics_feature("extract_prescriptions_from_transcript"):
+        return await _extract_prescriptions_from_transcript_impl(transcript)
+
+
+async def _extract_prescriptions_from_transcript_impl(transcript: str) -> list[dict[str, str]]:
     if not settings.TOGETHER_API_KEY:
         raise ValueError("TOGETHER_API_KEY is not configured")
     text = (transcript or "").strip()
@@ -512,6 +603,17 @@ Rules:
 
 
 async def generate_soap_from_transcript(
+    transcript: str,
+    patient_info: dict[str, Any],
+    lab_report_context: str | None = None,
+) -> dict[str, Any]:
+    with analytics_feature("generate_soap_from_transcript"):
+        return await _generate_soap_from_transcript_impl(
+            transcript, patient_info, lab_report_context
+        )
+
+
+async def _generate_soap_from_transcript_impl(
     transcript: str,
     patient_info: dict[str, Any],
     lab_report_context: str | None = None,
@@ -699,6 +801,23 @@ async def generate_health_profile_update(
     Returns a dict with three keys: allergies, long_term_medications, conditions.
     Each is a list of dicts; ids may be empty for new items.
     """
+    with analytics_feature("generate_health_profile_update"):
+        return await _generate_health_profile_update_impl(
+            patient_info,
+            current_profile,
+            visits_context,
+            lab_reports_context,
+            suppressed_items,
+        )
+
+
+async def _generate_health_profile_update_impl(
+    patient_info: dict[str, Any],
+    current_profile: dict[str, Any],
+    visits_context: list[dict[str, Any]],
+    lab_reports_context: list[dict[str, Any]],
+    suppressed_items: dict[str, list[str]],
+) -> dict[str, Any]:
     if not settings.TOGETHER_API_KEY:
         raise ValueError("TOGETHER_API_KEY is not configured")
 
@@ -753,28 +872,50 @@ async def generate_health_profile_update(
 
 
 async def generate_embedding(text: str) -> list[float]:
-    if not settings.TOGETHER_API_KEY:
-        raise ValueError("TOGETHER_API_KEY is not configured")
-    headers = {
-        "Authorization": f"Bearer {settings.TOGETHER_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    body = {
-        "model": settings.TOGETHER_EMBEDDING_MODEL,
-        "input": text,
-    }
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(
-            f"{TOGETHER_BASE_URL}/embeddings",
-            headers=headers,
-            json=body,
-        )
-    resp.raise_for_status()
-    data = resp.json()
-    items = data.get("data") or []
-    if not items:
-        raise ValueError("Embedding API returned no data")
-    return items[0]["embedding"]
+    with analytics_feature("generate_embedding"):
+        if not settings.TOGETHER_API_KEY:
+            raise ValueError("TOGETHER_API_KEY is not configured")
+        started = time.perf_counter()
+        success = False
+        error_message: str | None = None
+        data: dict[str, Any] | None = None
+        headers = {
+            "Authorization": f"Bearer {settings.TOGETHER_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "model": settings.TOGETHER_EMBEDDING_MODEL,
+            "input": text,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.post(
+                    f"{TOGETHER_BASE_URL}/embeddings",
+                    headers=headers,
+                    json=body,
+                )
+            resp.raise_for_status()
+            data = resp.json()
+            items = data.get("data") or []
+            if not items:
+                raise ValueError("Embedding API returned no data")
+            success = True
+            return items[0]["embedding"]
+        except Exception as exc:
+            error_message = str(exc)
+            raise
+        finally:
+            duration_ms = (time.perf_counter() - started) * 1000
+            await record_llm_usage(
+                provider="together",
+                model=settings.TOGETHER_EMBEDDING_MODEL,
+                operation="embedding",
+                duration_ms=duration_ms,
+                success=success,
+                usage_data=data,
+                error_message=error_message,
+                provider_request_id=(data or {}).get("id") if isinstance(data, dict) else None,
+            )
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -806,6 +947,29 @@ async def generate_ai_reminders_llm(
     current_visit_date: str,
 ) -> dict[str, Any]:
     """LLM-produced slice of ai_reminders (documentation gaps + repeat-lab reminders)."""
+    with analytics_feature("generate_ai_reminders"):
+        return await _generate_ai_reminders_llm_impl(
+            transcript,
+            patient_info,
+            visit_summary_report,
+            structured,
+            visit_lab_context,
+            lab_timeline_rows,
+            embedding_similar_hints,
+            current_visit_date,
+        )
+
+
+async def _generate_ai_reminders_llm_impl(
+    transcript: str,
+    patient_info: dict[str, Any],
+    visit_summary_report: str,
+    structured: dict[str, Any],
+    visit_lab_context: str,
+    lab_timeline_rows: list[dict[str, Any]],
+    embedding_similar_hints: list[dict[str, Any]],
+    current_visit_date: str,
+) -> dict[str, Any]:
     if not settings.TOGETHER_API_KEY:
         raise ValueError("TOGETHER_API_KEY is not configured")
 

@@ -16,6 +16,7 @@ from typing import Any
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from app.services.api_analytics import api_analytics_scope
 from app.services.together import generate_health_profile_update
 
 logger = logging.getLogger(__name__)
@@ -269,13 +270,18 @@ async def refresh_health_profile(
         prompt_profile = _profile_for_prompt(existing_profile)
         suppressed = _suppressed_from(existing_profile)
 
-        llm_output = await generate_health_profile_update(
-            patient_info=patient_info,
-            current_profile=prompt_profile,
-            visits_context=visits,
-            lab_reports_context=labs,
-            suppressed_items=suppressed,
-        )
+        with api_analytics_scope(
+            doctor_id=doctor_id,
+            patient_id=str(patient_oid),
+            feature="refresh_health_profile",
+        ):
+            llm_output = await generate_health_profile_update(
+                patient_info=patient_info,
+                current_profile=prompt_profile,
+                visits_context=visits,
+                lab_reports_context=labs,
+                suppressed_items=suppressed,
+            )
 
         last_visit_id = visits[0]["visit_id"] if visits else ""
         merged = _merge_profile(existing_profile, llm_output, last_visit_id=last_visit_id)

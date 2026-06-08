@@ -35,6 +35,10 @@ from app.schemas.patient import (
     VisitPatch,
     VisitSoapPatch,
 )
+from app.services.api_analytics import (
+    bind_api_analytics_context,
+    reset_api_analytics_context,
+)
 from app.services.health_profile import (
     reconcile_health_profile_patch,
     refresh_health_profile,
@@ -734,6 +738,11 @@ async def extract_lab_reports(
 
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
     lab_disk: list[tuple[str, str, str | None]] = []
+    analytics_token = bind_api_analytics_context(
+        doctor_id=doctor_id,
+        patient_id=patient_id,
+        feature="extract_lab_reports",
+    )
 
     try:
         for upload in labs:
@@ -753,6 +762,7 @@ async def extract_lab_reports(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
     finally:
+        reset_api_analytics_context(analytics_token)
         for p in (x[0] for x in lab_disk):
             try:
                 os.remove(p)
@@ -795,6 +805,11 @@ async def prepare_visit_from_audio(
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
     audio_tmp_paths: list[str] = []
     lab_disk: list[tuple[str, str, str | None]] = []
+    analytics_token = bind_api_analytics_context(
+        doctor_id=doctor_id,
+        patient_id=patient_id,
+        feature="prepare_visit_from_audio",
+    )
 
     try:
         for upload in audio_list:
@@ -844,6 +859,7 @@ async def prepare_visit_from_audio(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
     finally:
+        reset_api_analytics_context(analytics_token)
         for p in (*audio_tmp_paths, *(x[0] for x in lab_disk)):
             try:
                 os.remove(p)
@@ -907,6 +923,11 @@ async def create_visit_from_audio(
     audio_tmp_paths: list[str] = []
     lab_disk: list[tuple[str, str, str | None]] = []
     visit_id = f"v-{int(datetime.now(timezone.utc).timestamp() * 1000)}"
+    analytics_token = bind_api_analytics_context(
+        doctor_id=doctor_id,
+        patient_id=patient_id,
+        feature="create_visit_from_audio",
+    )
     try:
         for upload in audio_list:
             ext = os.path.splitext(upload.filename or "")[1] or ".webm"
@@ -1136,6 +1157,7 @@ async def create_visit_from_audio(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
     finally:
+        reset_api_analytics_context(analytics_token)
         # Audio is only needed to generate transcript/notes; remove it always.
         for p in audio_tmp_paths:
             try:
@@ -1232,10 +1254,17 @@ async def hydrate_visit_prescriptions(
                 if str(row.get("dosage") or "").strip() or str(row.get("frequency") or "").strip():
                     return _doc_to_out(doc)
 
+    analytics_token = bind_api_analytics_context(
+        doctor_id=doctor_id,
+        patient_id=patient_id,
+        feature="hydrate_prescriptions",
+    )
     try:
         new_rx = await extract_prescriptions_from_transcript(transcript)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
+    finally:
+        reset_api_analytics_context(analytics_token)
     if not new_rx:
         return _doc_to_out(doc)
 
@@ -1320,69 +1349,75 @@ async def regenerate_visit_soap(
         "age": doc.get("age", ""),
         "gender": doc.get("gender", ""),
     }
-    # Re-extract spoken lab results (split per test) and replace prior transcript rows.
-    lab_reports = await refresh_transcript_lab_reports_for_visit(
-        list(doc.get("lab_reports") or []),
-        visit_id,
-        transcript,
+    analytics_token = bind_api_analytics_context(
+        doctor_id=doctor_id,
+        patient_id=patient_id,
+        feature="regenerate_visit_soap",
     )
-    doc = {**doc, "lab_reports": lab_reports}
-    # Rebuild from current lab_reports so doctor-side edits to a single report's
-    # extracted text flow into SOAP regeneration. Persist on the visit as cache.
-    rebuilt_lab_ctx = _rebuild_visit_lab_context(doc, visit_id)
-    if rebuilt_lab_ctx != (v.get("lab_report_details") or ""):
-        v = {**v, "lab_report_details": rebuilt_lab_ctx}
-        visits[idx] = v
-    lab_ctx = rebuilt_lab_ctx.strip() or None
     try:
-        llm = await generate_soap_from_transcript(transcript, patient_info, lab_ctx)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    title = (llm.get("visit_title") or "").strip()
-    summary_rep = (llm.get("visit_summary_report") or "").strip()
+        lab_reports = await refresh_transcript_lab_reports_for_visit(
+            list(doc.get("lab_reports") or []),
+            visit_id,
+            transcript,
+        )
+        doc = {**doc, "lab_reports": lab_reports}
+        rebuilt_lab_ctx = _rebuild_visit_lab_context(doc, visit_id)
+        if rebuilt_lab_ctx != (v.get("lab_report_details") or ""):
+            v = {**v, "lab_report_details": rebuilt_lab_ctx}
+            visits[idx] = v
+        lab_ctx = rebuilt_lab_ctx.strip() or None
+        try:
+            llm = await generate_soap_from_transcript(transcript, patient_info, lab_ctx)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
 
-    merged = {
-        **v,
-        "symptoms": llm.get("symptoms") or [],
-        "duration": llm.get("duration") or "",
-        "medical_history": llm.get("medical_history") or [],
-        "allergies": llm.get("allergies") or [],
-        "prescribed_medicines": llm.get("prescribed_medicines") or [],
-        "prescriptions": llm.get("prescriptions") or [],
-        "prescribed_lab_tests": llm.get("prescribed_lab_tests") or [],
-        "soap": llm.get("soap") or v.get("soap", {}),
-        "visit_title": title,
-        "visit_summary_report": summary_rep,
-        "lab_report_details": rebuilt_lab_ctx,
-    }
-    if title:
-        merged["diagnosis"] = title
+        title = (llm.get("visit_title") or "").strip()
+        summary_rep = (llm.get("visit_summary_report") or "").strip()
 
-    emb_vec, reminders_raw = await build_ai_reminders_for_visit_after_soap(
-        current_visit_id=visit_id,
-        current_visit_date=str(v.get("date") or ""),
-        patient_doc=dict(doc),
-        transcript=transcript,
-        soap_llm_bundle=dict(llm),
-        visit_lab_context=rebuilt_lab_ctx,
-        visits_similarity_pool=list(visits),
-        pending_lab_timeline_records=None,
-    )
-    merged["ai_reminders"] = reminders_raw
-    merged["ai_reminders_pending"] = False
-    if emb_vec:
-        merged["visit_summary_embedding"] = emb_vec
+        merged = {
+            **v,
+            "symptoms": llm.get("symptoms") or [],
+            "duration": llm.get("duration") or "",
+            "medical_history": llm.get("medical_history") or [],
+            "allergies": llm.get("allergies") or [],
+            "prescribed_medicines": llm.get("prescribed_medicines") or [],
+            "prescriptions": llm.get("prescriptions") or [],
+            "prescribed_lab_tests": llm.get("prescribed_lab_tests") or [],
+            "soap": llm.get("soap") or v.get("soap", {}),
+            "visit_title": title,
+            "visit_summary_report": summary_rep,
+            "lab_report_details": rebuilt_lab_ctx,
+        }
+        if title:
+            merged["diagnosis"] = title
 
-    visits[idx] = merged
-    await col.update_one(
-        {"_id": oid, "doctor_id": doctor_id},
-        {"$set": {"visits": visits, "lab_reports": lab_reports}},
-    )
+        emb_vec, reminders_raw = await build_ai_reminders_for_visit_after_soap(
+            current_visit_id=visit_id,
+            current_visit_date=str(v.get("date") or ""),
+            patient_doc=dict(doc),
+            transcript=transcript,
+            soap_llm_bundle=dict(llm),
+            visit_lab_context=rebuilt_lab_ctx,
+            visits_similarity_pool=list(visits),
+            pending_lab_timeline_records=None,
+        )
+        merged["ai_reminders"] = reminders_raw
+        merged["ai_reminders_pending"] = False
+        if emb_vec:
+            merged["visit_summary_embedding"] = emb_vec
 
-    background_tasks.add_task(refresh_health_profile, db, doctor_id, oid)
+        visits[idx] = merged
+        await col.update_one(
+            {"_id": oid, "doctor_id": doctor_id},
+            {"$set": {"visits": visits, "lab_reports": lab_reports}},
+        )
 
-    updated = await col.find_one({"_id": oid, "doctor_id": doctor_id})
-    return _doc_to_out(updated)
+        background_tasks.add_task(refresh_health_profile, db, doctor_id, oid)
+
+        updated = await col.find_one({"_id": oid, "doctor_id": doctor_id})
+        return _doc_to_out(updated)
+    finally:
+        reset_api_analytics_context(analytics_token)
 
 
 @router.post(
@@ -1433,16 +1468,24 @@ async def refresh_visit_ai_reminders(
         "soap": v.get("soap") or {},
     }
 
-    emb_vec, reminders_raw = await build_ai_reminders_for_visit_after_soap(
-        current_visit_id=visit_id,
-        current_visit_date=str(v.get("date") or ""),
-        patient_doc=dict(doc),
-        transcript=transcript,
-        soap_llm_bundle=merged_bundle,
-        visit_lab_context=rebuilt_lab_ctx,
-        visits_similarity_pool=list(visits),
-        pending_lab_timeline_records=None,
+    analytics_token = bind_api_analytics_context(
+        doctor_id=doctor_id,
+        patient_id=patient_id,
+        feature="refresh_visit_ai_reminders",
     )
+    try:
+        emb_vec, reminders_raw = await build_ai_reminders_for_visit_after_soap(
+            current_visit_id=visit_id,
+            current_visit_date=str(v.get("date") or ""),
+            patient_doc=dict(doc),
+            transcript=transcript,
+            soap_llm_bundle=merged_bundle,
+            visit_lab_context=rebuilt_lab_ctx,
+            visits_similarity_pool=list(visits),
+            pending_lab_timeline_records=None,
+        )
+    finally:
+        reset_api_analytics_context(analytics_token)
     patched = dict(v)
     patched["ai_reminders"] = reminders_raw
     patched["ai_reminders_pending"] = False

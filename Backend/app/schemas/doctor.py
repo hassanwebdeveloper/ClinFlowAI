@@ -1,4 +1,9 @@
+from typing import Literal
+
 from pydantic import BaseModel, EmailStr, Field
+
+LicenseType = Literal["free_trial"]
+DEFAULT_LICENSE_TYPE: LicenseType = "free_trial"
 
 
 class DoctorSignup(BaseModel):
@@ -27,6 +32,7 @@ class DoctorResponse(BaseModel):
     years_of_experience: int | None = None
     practice_name: str | None = None
     license_number: str | None = None
+    license_type: LicenseType = DEFAULT_LICENSE_TYPE
 
 
 class AuthTokenResponse(BaseModel):

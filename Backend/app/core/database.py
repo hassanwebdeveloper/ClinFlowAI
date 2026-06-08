@@ -3,6 +3,7 @@ import redis
 from pymongo.errors import OperationFailure
 
 from app.core.config import settings
+from app.schemas.doctor import DEFAULT_LICENSE_TYPE
 
 # MongoDB Connection
 mongodb_client: AsyncIOMotorClient = None
@@ -15,7 +16,14 @@ async def connect_to_mongodb():
     try:
         mongodb_client = AsyncIOMotorClient(settings.MONGODB_URL)
         db = mongodb_client[settings.MONGODB_DB_NAME]
-        await db["doctors"].create_index("email", unique=True)
+        doctors = db["doctors"]
+        await doctors.create_index("email", unique=True)
+        backfill = await doctors.update_many(
+            {"license_type": {"$exists": False}},
+            {"$set": {"license_type": DEFAULT_LICENSE_TYPE}},
+        )
+        if backfill.modified_count:
+            print(f"Backfilled license_type for {backfill.modified_count} doctor(s).")
         await db["access_requests"].create_index("token_hash", unique=True)
         await db["access_requests"].create_index([("email", 1), ("status", 1)])
         await db["clinics"].create_index("doctor_id")
@@ -33,6 +41,12 @@ async def connect_to_mongodb():
             name=PATIENTS_CLINIC_UI_INDEX,
             partialFilterExpression={"clinic_id": {"$type": "string"}},
         )
+
+        api_usage = db["api_usage_events"]
+        await api_usage.create_index([("doctor_id", 1), ("created_at", -1)])
+        await api_usage.create_index([("service_type", 1), ("created_at", -1)])
+        await api_usage.create_index([("feature", 1), ("created_at", -1)])
+
         print("Connected to MongoDB.")
     except Exception as e:
         print(f"Could not connect to MongoDB: {e}")

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
+from typing import Any
 
 from soniox import SonioxClient
 from soniox.types import (
@@ -20,6 +22,11 @@ from soniox.types import (
 )
 
 from app.core.config import settings
+from app.services.api_analytics import (
+    audio_file_metrics,
+    count_soniox_tokens,
+    record_stt_usage,
+)
 
 # Improves translation to English for clinical audio: domain hints + terminology so drug/lab
 # names stay as standard English terms rather than generic descriptions (see Soniox context docs).
@@ -158,7 +165,7 @@ def _transcribe_file_sync(
     language: str,
     *,
     translate_to_english: bool,
-) -> str:
+) -> dict[str, Any]:
     if not settings.SONIOX_API_KEY:
         raise ValueError("SONIOX_API_KEY is not configured")
 
@@ -166,8 +173,6 @@ def _transcribe_file_sync(
     lang = (language or "").strip().lower()
     model = settings.SONIOX_STT_MODEL
 
-    # Match async translation guide: model + options on CreateTranscriptionConfig, then create job.
-    # https://soniox.com/docs/stt/async/async-translation
     if translate_to_english:
         config = CreateTranscriptionConfig(
             model=model,
@@ -186,11 +191,20 @@ def _transcribe_file_sync(
         filename=os.path.basename(file_path),
         config=config,
     )
+    transcription_id = getattr(transcription, "id", None)
     try:
         client.stt.wait(
             transcription.id,
             timeout_sec=settings.SONIOX_STT_WAIT_TIMEOUT_SEC,
         )
+        completed = client.stt.get(transcription.id)
+        audio_duration_sec: float | None = None
+        audio_duration_ms = getattr(completed, "audio_duration_ms", None)
+        if audio_duration_ms is not None:
+            try:
+                audio_duration_sec = float(audio_duration_ms) / 1000.0
+            except (TypeError, ValueError):
+                audio_duration_sec = None
         transcript = client.stt.get_transcript(transcription.id)
         text = _text_from_soniox_transcript(
             transcript,
@@ -198,7 +212,16 @@ def _transcribe_file_sync(
         )
         if not text:
             raise ValueError("Soniox returned an empty transcript")
-        return text
+        transcription_tokens, translation_tokens = count_soniox_tokens(
+            getattr(transcript, "tokens", None)
+        )
+        return {
+            "text": text,
+            "transcription_id": transcription_id,
+            "transcription_tokens": transcription_tokens,
+            "translation_tokens": translation_tokens,
+            "audio_duration_sec": audio_duration_sec,
+        }
     finally:
         try:
             client.stt.destroy(transcription.id)
@@ -213,9 +236,38 @@ async def transcribe_audio_file(
     translate_to_english: bool = False,
 ) -> str:
     """Upload a local audio file to Soniox, run async STT, return plain text."""
-    return await asyncio.to_thread(
-        _transcribe_file_sync,
-        file_path,
-        language,
-        translate_to_english=translate_to_english,
-    )
+    started = time.perf_counter()
+    success = False
+    error_message: str | None = None
+    result: dict[str, Any] | None = None
+    audio_duration_sec, audio_file_size_bytes = audio_file_metrics(file_path)
+    try:
+        result = await asyncio.to_thread(
+            _transcribe_file_sync,
+            file_path,
+            language,
+            translate_to_english=translate_to_english,
+        )
+        success = True
+        return str(result.get("text") or "").strip()
+    except Exception as exc:
+        error_message = str(exc)
+        raise
+    finally:
+        duration_ms = (time.perf_counter() - started) * 1000
+        if result and result.get("audio_duration_sec") is not None:
+            audio_duration_sec = result["audio_duration_sec"]
+        await record_stt_usage(
+            provider="soniox",
+            model=settings.SONIOX_STT_MODEL,
+            duration_ms=duration_ms,
+            success=success,
+            audio_duration_sec=audio_duration_sec,
+            audio_file_size_bytes=audio_file_size_bytes,
+            transcription_tokens=(result or {}).get("transcription_tokens"),
+            translation_tokens=(result or {}).get("translation_tokens"),
+            translate_to_english=translate_to_english,
+            language=language,
+            error_message=error_message,
+            provider_request_id=(result or {}).get("transcription_id"),
+        )

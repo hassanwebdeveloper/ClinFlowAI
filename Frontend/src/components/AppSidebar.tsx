@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { Users, CalendarDays, Search, Settings, Menu, X, Stethoscope, LogOut, Building2 } from "lucide-react";
+import { Users, CalendarDays, Search, Menu, X, Stethoscope, LogOut, Building2 } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { cn } from "@/lib/utils";
 import { APP_NAME } from "@/lib/branding";
-import { patientsListPath, searchTabPath, settingsTabPath, visitsTabPath } from "@/lib/routes";
+import { patientsListPath, searchTabPath, visitsTabPath } from "@/lib/routes";
 
 interface AppSidebarProps {
   userName?: string;
@@ -16,7 +16,6 @@ const navItems = [
   { id: "patients", label: "Patients", icon: Users, to: patientsListPath() },
   { id: "visits", label: "Visits", icon: CalendarDays, to: visitsTabPath() },
   { id: "search", label: "Search", icon: Search, to: searchTabPath() },
-  { id: "settings", label: "Settings", icon: Settings, to: settingsTabPath() },
 ] as const;
 
 export function AppSidebar({ userName = "Doctor", clinicName, onBackToClinics, onSignOut }: AppSidebarProps) {
