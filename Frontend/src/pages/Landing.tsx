@@ -24,10 +24,10 @@ export default function Landing() {
       <LandingHeader />
       <main>
         <LandingHero />
+        <LandingBenefits />
         <LandingMediaSection />
         <DemoVideoSection />
         <ProductShowcase />
-        <LandingBenefits />
         <LandingTestimonials />
         <LandingFAQ />
         <LandingFinalCTA />

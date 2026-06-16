@@ -51,11 +51,11 @@ export function LandingTestimonials() {
             Testimonials
           </Badge>
           <h2 className="font-display text-3xl font-bold tracking-tight text-[hsl(210_25%_12%)] sm:text-4xl lg:text-5xl">
-            Physicians who reclaimed their focus
+            Real outcomes from real physicians
           </h2>
           <p className="mt-4 text-lg text-[hsl(210_12%_38%)]">
-            Early adopters report more time with patients, fewer documentation errors, and
-            shorter days at the clinic.
+            More patients per day, higher satisfaction, fewer missed details — and evenings
+            without charting.
           </p>
         </div>
 

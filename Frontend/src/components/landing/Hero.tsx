@@ -32,28 +32,28 @@ export function LandingHero() {
               style={{ animationDelay: "0ms" }}
             >
               <Mic className="mr-1.5 inline h-3.5 w-3.5" />
-              Voice-first clinical documentation
+              Built for physicians who want their time back
             </Badge>
 
             <h1
               className="animate-landing-fade-in font-display text-[2.75rem] font-bold leading-[1.08] tracking-tight text-[hsl(210_25%_12%)] sm:text-5xl lg:text-[3.75rem]"
               style={{ animationDelay: "100ms" }}
             >
-              Documentation at{" "}
+              See more patients.{" "}
               <span className="relative whitespace-nowrap text-teal-700">
-                zero effort
+                Earn more.
                 <span className="absolute -bottom-1 left-0 h-1 w-full rounded-full bg-amber-400/60" />
-              </span>
-              . Full attention on your patient.
+              </span>{" "}
+              Chart less.
             </h1>
 
             <p
               className="animate-landing-fade-in max-w-xl text-lg leading-relaxed text-[hsl(210_12%_38%)] sm:text-xl"
               style={{ animationDelay: "200ms" }}
             >
-              Stop turning between your screen and your patient. After the visit, speak your
-              summary — ClinFlow AI generates SOAP notes, prescriptions, lab orders, and patient
-              dashboards automatically.
+              Hand documentation to ClinFlow AI and reclaim 30–40% of your time on every visit.
+              More patients per day, deeper understanding of each one, and evenings free from
+              charting at home.
             </p>
 
             <div
@@ -91,11 +91,16 @@ export function LandingHero() {
                 </span>
               </div>
               <div className="hidden h-5 w-px bg-teal-900/10 sm:block" />
-              <div className="flex items-center gap-2 text-sm text-[hsl(210_12%_38%)]">
-                <Users className="h-4 w-4 text-teal-600" />
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-[hsl(210_12%_38%)]">
+                <span className="flex items-center gap-2">
+                  <Users className="h-4 w-4 text-teal-600" />
+                  <strong className="font-semibold text-[hsl(210_25%_15%)]">30–40%</strong> less
+                  time per patient
+                </span>
+                <span className="hidden h-5 w-px bg-teal-900/10 sm:block" />
                 <span>
-                  <strong className="font-semibold text-[hsl(210_25%_15%)]">2+ hours</strong> saved
-                  per physician daily
+                  <strong className="font-semibold text-[hsl(210_25%_15%)]">2+ extra patients</strong>{" "}
+                  possible per day
                 </span>
               </div>
             </div>
@@ -164,7 +169,7 @@ function ProblemSolutionVisual() {
       {/* Solution */}
       <div className="rounded-3xl border-2 border-teal-300 bg-gradient-to-br from-teal-50 to-white p-5 shadow-xl shadow-teal-900/10">
         <p className="mb-4 text-center text-xs font-bold uppercase tracking-widest text-teal-700">
-          The ClinFlow AI solution
+          What you gain
         </p>
         <div className="space-y-3">
           <div className="flex items-center gap-3 rounded-2xl bg-white p-3 shadow-sm">
@@ -172,8 +177,8 @@ function ProblemSolutionVisual() {
               <User className="h-5 w-5 text-teal-700" />
             </div>
             <div>
-              <p className="text-sm font-semibold text-teal-900">During the visit</p>
-              <p className="text-xs text-teal-700/70">Full eye contact. Zero typing.</p>
+              <p className="text-sm font-semibold text-teal-900">Patients feel truly heard</p>
+              <p className="text-xs text-teal-700/70">Full attention during every exam.</p>
             </div>
           </div>
           <div className="flex items-center gap-3 rounded-2xl bg-white p-3 shadow-sm">
@@ -181,8 +186,8 @@ function ProblemSolutionVisual() {
               <Mic className="h-5 w-5 text-amber-700" />
             </div>
             <div>
-              <p className="text-sm font-semibold text-teal-900">After the visit</p>
-              <p className="text-xs text-teal-700/70">Speak a 2-minute summary.</p>
+              <p className="text-sm font-semibold text-teal-900">Your day opens up</p>
+              <p className="text-xs text-teal-700/70">30–40% less time trapped in notes.</p>
             </div>
           </div>
           <div className="flex items-center gap-3 rounded-2xl bg-teal-600 p-3 shadow-md">
@@ -190,8 +195,8 @@ function ProblemSolutionVisual() {
               <Zap className="h-5 w-5 text-white" />
             </div>
             <div>
-              <p className="text-sm font-semibold text-white">ClinFlow AI handles the rest</p>
-              <p className="text-xs text-teal-100">Notes, labs, prescriptions — done.</p>
+              <p className="text-sm font-semibold text-white">Practice grows without burnout</p>
+              <p className="text-xs text-teal-100">More visits, higher income, leave on time.</p>
             </div>
           </div>
         </div>
