@@ -29,14 +29,14 @@ export function DemoVideoSection() {
       <div className="relative mx-auto max-w-5xl px-4 sm:px-6 lg:px-8">
         <div className="mb-12 text-center">
           <Badge className="mb-4 border-teal-500/30 bg-teal-500/10 text-teal-300">
-            Product Demo
+            2-minute demo
           </Badge>
           <h2 className="font-display text-3xl font-bold tracking-tight text-white sm:text-4xl lg:text-5xl">
-            See ClinFlow AI in action
+            Watch a physician reclaim their afternoon
           </h2>
           <p className="mx-auto mt-4 max-w-2xl text-lg text-slate-400">
-            Watch how a physician speaks a visit summary and ClinFlow AI generates complete
-            clinical documentation in seconds.
+            See what happens when documentation stops eating your day — and your patients get the
+            attention they came for.
           </p>
         </div>
 

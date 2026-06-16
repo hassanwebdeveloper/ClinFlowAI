@@ -17,13 +17,13 @@ export function ProductShowcase() {
   const tabs: { id: Tab; label: string; description: string }[] = [
     {
       id: "visit",
-      label: "Visit Documentation",
-      description: "From voice recording to complete clinical records",
+      label: "Faster visits",
+      description: "Finish each chart in minutes, not a quarter-hour",
     },
     {
       id: "dashboard",
-      label: "Patient Dashboard",
-      description: "Living health profiles with lab trend tracking",
+      label: "Smarter follow-ups",
+      description: "Know each patient's story before you walk in",
     },
   ];
 
@@ -45,15 +45,15 @@ export function ProductShowcase() {
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <div className="mx-auto mb-16 max-w-2xl text-center">
           <Badge variant="secondary" className="mb-4 border-teal-200 bg-teal-50 text-teal-800">
-            Product Screenshots
+            See the difference
           </Badge>
           <h2 className="font-display text-3xl font-bold tracking-tight text-[hsl(210_25%_12%)] sm:text-4xl lg:text-5xl">
-            Built for the way{" "}
-            <span className="text-teal-700">physicians actually work</span>
+            Less admin.{" "}
+            <span className="text-teal-700">More medicine.</span>
           </h2>
           <p className="mt-4 text-lg text-[hsl(210_12%_38%)]">
-            Explore every part of ClinFlow AI — from voice capture to patient dashboards — in
-            a workflow designed around your exam room.
+            Every screen below exists so you spend less time on paperwork and more time on what
+            only you can do — diagnose, treat, and connect with patients.
           </p>
         </div>
 

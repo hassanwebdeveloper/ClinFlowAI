@@ -2,10 +2,11 @@ import { Link } from "react-router-dom";
 import { Activity, Mail } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import { APP_NAME } from "@/lib/branding";
-import { signInPath } from "@/lib/routes";
+import { guidePath, signInPath } from "@/lib/routes";
 
 const footerLinks = {
   product: [
+    { label: "User Guide", href: guidePath(), isRoute: true },
     { label: "Features", href: "#features" },
     { label: "How It Works", href: "#how-it-works" },
     { label: "FAQ", href: "#faq" },
@@ -38,11 +39,11 @@ export function LandingFooter() {
               paperwork.
             </p>
             <a
-              href="mailto:support@clinflow.ai"
+              href="mailto:support@clinflowai.net"
               className="inline-flex items-center gap-2 text-sm text-teal-400 transition-colors hover:text-teal-300"
             >
               <Mail className="h-4 w-4" />
-              support@clinflow.ai
+              support@clinflowai.net
             </a>
           </div>
 
@@ -53,12 +54,21 @@ export function LandingFooter() {
             <ul className="space-y-2.5">
               {footerLinks.product.map((link) => (
                 <li key={link.label}>
-                  <a
-                    href={link.href}
-                    className="text-sm text-slate-400 transition-colors hover:text-white"
-                  >
-                    {link.label}
-                  </a>
+                  {"isRoute" in link && link.isRoute ? (
+                    <Link
+                      to={link.href}
+                      className="text-sm text-slate-400 transition-colors hover:text-white"
+                    >
+                      {link.label}
+                    </Link>
+                  ) : (
+                    <a
+                      href={link.href}
+                      className="text-sm text-slate-400 transition-colors hover:text-white"
+                    >
+                      {link.label}
+                    </a>
+                  )}
                 </li>
               ))}
             </ul>

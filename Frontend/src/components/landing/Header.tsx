@@ -2,13 +2,14 @@ import { Link } from "react-router-dom";
 import { Activity } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { APP_NAME } from "@/lib/branding";
-import { signInPath, signUpPath } from "@/lib/routes";
+import { guidePath, signInPath, signUpPath } from "@/lib/routes";
 
 const navLinks = [
+  { href: guidePath(), label: "User Guide", isRoute: true },
   { href: "#how-it-works", label: "How It Works" },
   { href: "#demo", label: "Demo" },
   { href: "#product", label: "Product" },
-  { href: "#features", label: "Features" },
+  { href: "#benefits", label: "Benefits" },
   { href: "#testimonials", label: "Testimonials" },
   { href: "#faq", label: "FAQ" },
 ];
@@ -27,15 +28,25 @@ export function LandingHeader() {
         </Link>
 
         <nav className="hidden items-center gap-8 md:flex" aria-label="Main navigation">
-          {navLinks.map((link) => (
-            <a
-              key={link.href}
-              href={link.href}
-              className="text-sm font-medium text-[hsl(210_15%_40%)] transition-colors hover:text-teal-700"
-            >
-              {link.label}
-            </a>
-          ))}
+          {navLinks.map((link) =>
+            "isRoute" in link && link.isRoute ? (
+              <Link
+                key={link.href}
+                to={link.href}
+                className="text-sm font-medium text-[hsl(210_15%_40%)] transition-colors hover:text-teal-700"
+              >
+                {link.label}
+              </Link>
+            ) : (
+              <a
+                key={link.href}
+                href={link.href}
+                className="text-sm font-medium text-[hsl(210_15%_40%)] transition-colors hover:text-teal-700"
+              >
+                {link.label}
+              </a>
+            ),
+          )}
         </nav>
 
         <div className="flex items-center gap-3">

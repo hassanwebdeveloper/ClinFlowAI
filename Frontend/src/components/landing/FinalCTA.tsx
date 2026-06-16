@@ -17,21 +17,21 @@ export function LandingFinalCTA() {
         </div>
 
         <h2 className="font-display text-3xl font-bold tracking-tight text-white sm:text-4xl lg:text-5xl">
-          Your patients deserve your full attention.
+          Ready to see more patients and leave on time?
         </h2>
         <p className="mx-auto mt-4 max-w-2xl text-lg text-teal-100 sm:text-xl">
-          Join physicians who've eliminated the documentation burden. Speak your summary —
-          ClinFlow AI handles the rest.
+          Join physicians who handed documentation to ClinFlow AI — and got back their time,
+          income, and focus.
         </p>
 
         <div className="mt-8 flex flex-col items-center justify-center gap-4 sm:flex-row sm:gap-8">
           <div className="flex items-center gap-2 text-teal-100">
             <CheckCircle className="h-5 w-5 text-amber-300" />
-            <span>Free trial available</span>
+            <span>30–40% less time per visit</span>
           </div>
           <div className="flex items-center gap-2 text-teal-100">
             <CheckCircle className="h-5 w-5 text-amber-300" />
-            <span>No credit card required</span>
+            <span>Free trial — no credit card</span>
           </div>
           <div className="flex items-center gap-2 text-teal-100">
             <CheckCircle className="h-5 w-5 text-amber-300" />

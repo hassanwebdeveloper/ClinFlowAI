@@ -11,6 +11,8 @@ import NotFound from "./pages/NotFound.tsx";
 import SignInPage from "./pages/SignIn.tsx";
 import ResetPasswordPage from "./pages/ResetPassword.tsx";
 import AccessRequestReviewPage from "./pages/AccessRequestReview.tsx";
+import UserGuide from "./pages/UserGuide.tsx";
+import UserGuideChapter from "./pages/UserGuideChapter.tsx";
 
 const queryClient = new QueryClient();
 
@@ -28,6 +30,8 @@ const App = () => (
             <Route path="/signup" element={<SignInPage />} />
             <Route path="/reset-password" element={<ResetPasswordPage />} />
             <Route path="/access-requests/review" element={<AccessRequestReviewPage />} />
+            <Route path="/guide" element={<UserGuide />} />
+            <Route path="/guide/:sectionId" element={<UserGuideChapter />} />
             <Route path="/clinics" element={<Index />} />
             <Route path="/patients/:patientId/visits/:visitId" element={<Index />} />
             <Route path="/patients/:patientId" element={<Index />} />

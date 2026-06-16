@@ -8,14 +8,29 @@ import { Badge } from "@/components/ui/badge";
 
 const faqs = [
   {
-    question: "How does ClinFlow AI work during a patient visit?",
+    question: "How much time will I actually save per patient?",
     answer:
-      "You focus entirely on your patient during the visit — no typing, no screen glances. After the patient leaves, you speak a natural summary of the visit. ClinFlow AI transcribes your speech and generates structured clinical documentation automatically.",
+      "Physicians typically reclaim 30–40% of the time they used to spend on documentation per visit. What was 15 minutes of typing often becomes a 2-minute voice summary — freeing 2+ hours across a full clinic day.",
   },
   {
-    question: "What documentation does ClinFlow AI generate?",
+    question: "Can I really see more patients in the same hours?",
     answer:
-      "From a single voice summary, ClinFlow AI creates SOAP notes, allergy updates, prescriptions with dosages, lab test orders, visit summaries, and AI-powered reminders such as similar past visits or potential documentation gaps.",
+      "Yes. When charting stops being the bottleneck between visits, many physicians fit 2 or more additional patients into the same schedule — directly increasing practice revenue without extending clinic hours.",
+  },
+  {
+    question: "How does ClinFlow AI help me understand patients better?",
+    answer:
+      "Each patient gets a living health dashboard with visit history, lab trends, and follow-up tracking. You walk into every appointment with the full picture — not fragments scattered across old notes.",
+  },
+  {
+    question: "What if I miss something during a busy visit?",
+    answer:
+      "ClinFlow AI analyzes your summary against patient history and flags potential gaps: missed dosages, allergy conflicts, similar past visits, and incomplete documentation — before you sign off.",
+  },
+  {
+    question: "Will my patients notice a difference?",
+    answer:
+      "Absolutely. When you're not turning to a screen every few seconds, patients feel heard. Early adopters report higher satisfaction scores and stronger trust during exams.",
   },
   {
     question: "Does it understand medical terminology?",
@@ -23,29 +38,14 @@ const faqs = [
       "Yes. ClinFlow AI is built for clinical language — drug names, dosages, diagnoses, lab tests, and specialty-specific terminology are recognized and structured correctly into your patient records.",
   },
   {
-    question: "What is the patient dashboard?",
-    answer:
-      "Each patient gets a living health profile in ClinFlow AI. It tracks visit history, follow-up labs required, and displays line charts for recurring lab results so you can spot trends at a glance.",
-  },
-  {
-    question: "How does ClinFlow AI help catch errors?",
-    answer:
-      "The AI analyzes your spoken summary against the patient's history. It can flag missed dosages, remind you of allergies, surface similar previous visits, and highlight documentation items you may have overlooked.",
-  },
-  {
     question: "Is my patient data secure?",
     answer:
       "ClinFlow AI is designed with healthcare data security in mind. Patient records are encrypted and access-controlled, with audit trails for clinical compliance.",
   },
   {
-    question: "Do I need special hardware?",
+    question: "How long does it take to get started?",
     answer:
-      "No special equipment is required. Any standard microphone on your computer or clinic workstation works. Just speak naturally after each visit.",
-  },
-  {
-    question: "How long does it take to generate documentation?",
-    answer:
-      "Most visit summaries are processed and structured within seconds. A two-minute voice summary typically produces a complete set of clinical records faster than typing would allow.",
+      "Setup takes minutes — no special hardware required. Any standard microphone works. Most physicians are documenting their first visit within their first session.",
   },
 ];
 
@@ -61,7 +61,7 @@ export function LandingFAQ() {
             Common questions
           </h2>
           <p className="mt-4 text-lg text-[hsl(210_12%_38%)]">
-            Everything you need to know about voice-first documentation with ClinFlow AI.
+            Practical answers about what changes for you, your patients, and your practice.
           </p>
         </div>
 

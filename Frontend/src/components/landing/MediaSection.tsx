@@ -13,15 +13,15 @@ export function LandingMediaSection() {
       <div className="relative mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <div className="mx-auto mb-16 max-w-2xl text-center">
           <Badge variant="secondary" className="mb-4 border-teal-200 bg-teal-50 text-teal-800">
-            How it works
+            How you get there
           </Badge>
           <h2 className="font-display text-3xl font-bold tracking-tight text-[hsl(210_25%_12%)] sm:text-4xl lg:text-5xl">
-            Speak once.{" "}
-            <span className="text-teal-700">Documentation done.</span>
+            Two minutes of your voice.{" "}
+            <span className="text-teal-700">Hours back in your day.</span>
           </h2>
           <p className="mt-4 text-lg text-[hsl(210_12%_38%)]">
-            After your patient leaves, describe the visit in your own words. ClinFlow AI
-            transforms your speech into structured clinical records in seconds.
+            You stay with your patient during the visit. After they leave, speak a short summary —
+            ClinFlow AI handles the rest so you can move on to the next person, not the next chart.
           </p>
         </div>
 
@@ -59,8 +59,8 @@ export function LandingMediaSection() {
               </span>
             </div>
             <p className="max-w-lg text-center text-sm text-[hsl(210_12%_45%)]">
-              From that single voice summary, every clinical record below is created for you —
-              no extra steps required.
+              Everything below is created automatically — so you move to your next patient
+              instead of your next chart.
             </p>
           </div>
 
