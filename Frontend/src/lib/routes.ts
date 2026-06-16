@@ -6,6 +6,14 @@ export function signUpPath() {
   return "/signup";
 }
 
+export function guidePath() {
+  return "/guide";
+}
+
+export function guideChapterPath(sectionId: string) {
+  return `/guide/${encodeURIComponent(sectionId)}`;
+}
+
 export function resetPasswordPath() {
   return "/reset-password";
 }
